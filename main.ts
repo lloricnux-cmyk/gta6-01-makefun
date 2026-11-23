@@ -6,7 +6,7 @@
 // vendored make.fun library.
 //
 // The game is an original top-down open-world crime game: Rico Vega returns to
-// the fictional city of Solmar Bay and works six missions for Mara Solano while
+// the fictional city of Solmar Bay and works seven missions for Mara Solano while
 // the Solmar Bay police keep score. On foot and by car, with traffic and
 // pedestrians, car stealing, a five-star wanted level with a heat meter, police
 // pursuits, combat with three guns, a HUD with a minimap, a start screen, a
@@ -108,6 +108,6 @@ writeFileSync(join(out, 'dossier.json'), buildDossier(out, LIMITS));
 
 console.log(
   `Solmar Bay handed in: ${checked.gameFiles} game files (${checked.gameBytes} bytes), `
-  + `${checked.shots} screenshots, 6 missions · taxi fares · street races · 20 packages · bikes & trucks, `
+  + `${checked.shots} screenshots, 7 missions · taxi fares · street races · 20 packages · bikes & trucks · storms, `
   + `dossier written to ${join(out, 'dossier.json')}`,
 );
