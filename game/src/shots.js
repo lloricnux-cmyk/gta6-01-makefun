@@ -5,8 +5,8 @@
 // always gives the same frame. The start scene is the title over a live city;
 // play is a drive through downtown in the red Comet GT — the hero car, not a
 // random traffic car — with a one-star wanted level; chase is a three-star
-// police pursuit with a smoking car; mission is mission 4's last stand at the
-// Starfish Club, thugs closing in at golden hour.
+// police pursuit with a smoking car; mission is mission 5's bank job at the
+// Solmar Trust, shotgun out, the vault guards closing in at golden hour.
 import { STEP } from './config.js';
 import { SCREEN_PLAY, SCREEN_TITLE } from './render.js';
 import { angleDiff } from './random.js';
@@ -126,23 +126,26 @@ export function stageShot(name, world) {
   if (name === 'mission') {
     world.reset();
     world.debug.setTimeOfDay(0.72);
-    // Mission 4, mid-fight: Rico on foot outside the Starfish Club, pistol
-    // out, Los Diablos thugs closing in from every side.
-    world.debug.setMission(3, 1);
-    world.debug.spawnClubThugs();
+    // Mission 5, mid-hold-up: Rico on foot outside the Solmar Trust, shotgun
+    // out, the bank's guards closing in from every side.
+    world.debug.setMission(4, 1);
+    world.debug.spawnBankThugs();
     state.player.armed = true;
-    state.player.ammo = 60;
-    state.player.x = 1520;
-    state.player.y = 830;
+    state.player.weapon = 'shotgun';
+    state.player.owned.shotgun = true;
+    state.player.ammoByWeapon.shotgun = 12;
+    state.player.ammo = 12;
+    state.player.x = 2160;
+    state.player.y = 640;
     state.player.angle = -Math.PI / 2;
-    state.camera.x = 1520;
-    state.camera.y = 860;
-    world.showBanner('MISSION 4 · LAST STAND', 3.2);
-    world.showToast('Hold the Starfish — 6 thugs left.', 4);
+    state.camera.x = 2160;
+    state.camera.y = 600;
+    world.showBanner('MISSION 5 · THE BANK JOB', 3.2);
+    world.showToast('Hold the vault — 3 guards left.', 4);
     for (let i = 0; i < MISSION_SECONDS / STEP; i += 1) {
       world.step(STEP, idleInput(), true);
     }
-    return { screen: SCREEN_PLAY, best: 3700 };
+    return { screen: SCREEN_PLAY, best: 9700 };
   }
   // Default: the title over a living city.
   world.reset();

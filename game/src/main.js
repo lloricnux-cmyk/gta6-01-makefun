@@ -11,15 +11,17 @@
 import { BEST_KEY, SAVE_KEY, STEP, VIEW } from './config.js';
 import { createRandom } from './random.js';
 import { createWorld, EVENT_BUSTED, EVENT_ENTER_CAR, EVENT_EXPLOSION, EVENT_HORN, EVENT_MISSION, EVENT_PICKUP, EVENT_PUNCH, EVENT_SHOT, EVENT_WASTED } from './world.js';
-import { ACTION_CONFIRM, ACTION_CONTINUE, ACTION_ENTER, ACTION_HORN, ACTION_MUTE, ACTION_PAUSE, createInput } from './input.js';
+import { ACTION_CONFIRM, ACTION_CONTINUE, ACTION_ENTER, ACTION_HORN, ACTION_MUTE, ACTION_PAUSE, ACTION_PHONE, ACTION_WEAPON_1, ACTION_WEAPON_2, ACTION_WEAPON_3, createInput } from './input.js';
 import { createAudio } from './audio.js';
 import { createRenderer, SCREEN_BUSTED, SCREEN_PAUSED, SCREEN_PLAY, SCREEN_TITLE, SCREEN_WASTED } from './render.js';
 import { stageShot } from './shots.js';
+import { EVENT_PACKAGE, EVENT_RACE, EVENT_TAXI } from './side.js';
+import { switchWeapon, weaponName } from './weapons.js';
 
 /** The longest frame the loop catches up on; a longer stall (a hidden tab) is dropped, not replayed. */
 const MAX_FRAME = 0.25;
-/** The story has four missions; a save from an older build clamps to them. */
-const MISSION_COUNT = 4;
+/** The story has six missions; a save from an older build clamps to them. */
+const MISSION_COUNT = 6;
 
 const params = new URLSearchParams(window.location.search);
 const shot = params.get('shot');
@@ -72,6 +74,9 @@ function applySave(save) {
   const mission = Math.max(0, Math.min(MISSION_COUNT, save.mission));
   if (mission >= 1) {
     player.armed = true;
+    player.ammoByWeapon.pistol = 60;
+    player.weapon = 'pistol';
+    player.owned.pistol = true;
     player.ammo = 60;
   }
   if (mission >= 1 && mission < MISSION_COUNT) world.debug.setMission(mission, 0);
@@ -105,6 +110,8 @@ function runGame() {
   let missionSeen = world.state.missionIndex;
   let wantedSeen = world.state.wanted;
   let muted = false;
+  // Rico's phone: open over the game, the world waiting behind it.
+  let phoneOpen = false;
 
   function ui() {
     return {
@@ -113,6 +120,7 @@ function runGame() {
       saveCash: save ? save.cash : 0,
       saveMission: save ? save.mission : 0,
       lost,
+      phoneOpen,
     };
   }
 
@@ -176,12 +184,22 @@ function runGame() {
       shootHeld: input.mouse().down,
       aimX: aim.x, aimY: aim.y,
     }, false);
-    if (events & EVENT_SHOT) audio.shot();
+    if (events & EVENT_SHOT) {
+      // Each gun sounds like itself: the shotgun booms, the SMG cracks, the
+      // pistol pops the way it always has.
+      const gun = world.state.player.weapon;
+      if (gun === 'shotgun') audio.shotgun();
+      else if (gun === 'smg') audio.smg();
+      else audio.shot();
+    }
     if (events & EVENT_PUNCH) audio.punch();
     if (events & EVENT_PICKUP) audio.pickup();
     if (events & EVENT_EXPLOSION) audio.explosion();
     if (events & EVENT_ENTER_CAR) audio.pickup();
     if (events & EVENT_HORN) audio.horn();
+    if (events & EVENT_TAXI) audio.taxi();
+    if (events & EVENT_RACE) audio.raceBeep(false);
+    if (events & EVENT_PACKAGE) audio.packageBlip();
     if (events & EVENT_MISSION) {
       audio.mission();
       writeSave();
@@ -215,7 +233,19 @@ function runGame() {
         announce('Back on the streets.');
       }
     } else if (screen === SCREEN_PLAY) {
-      if (actions & ACTION_PAUSE) {
+      if (actions & ACTION_PHONE) {
+        phoneOpen = !phoneOpen;
+        audio.phoneClick();
+        announce(phoneOpen ? 'Phone open. Missions, ledger, guns.' : 'Phone closed.');
+      } else if (!phoneOpen && (actions & ACTION_WEAPON_1)) {
+        if (switchWeapon(world.state.player, 'pistol')) announce('Pistol in hand.');
+      } else if (!phoneOpen && (actions & ACTION_WEAPON_2)) {
+        if (switchWeapon(world.state.player, 'shotgun')) announce('Shotgun in hand.');
+        else announce('Shotgun not found yet — check the docks.');
+      } else if (!phoneOpen && (actions & ACTION_WEAPON_3)) {
+        if (switchWeapon(world.state.player, 'smg')) announce('SMG in hand.');
+        else announce('SMG not found yet — check the warehouse.');
+      } else if (actions & ACTION_PAUSE) {
         screen = SCREEN_PAUSED;
         announce('Paused. How to play is on screen.');
       }
@@ -233,7 +263,9 @@ function runGame() {
     last = now;
     const actions = input.takeActions();
     handleActions(actions);
-    if (screen === SCREEN_TITLE || screen === SCREEN_PLAY) {
+    // The phone holds the world still while it is open: the city waits
+    // behind the panel, and the loop only draws.
+    if ((screen === SCREEN_TITLE || screen === SCREEN_PLAY) && !phoneOpen) {
       let frameActions = actions;
       while (accumulator >= STEP && (screen === SCREEN_TITLE || screen === SCREEN_PLAY)) {
         step(frameActions);

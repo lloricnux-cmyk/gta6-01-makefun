@@ -12,6 +12,11 @@
 import { CAR, DAY_LENGTH, LAST_STAND, MISSIONS, PALETTE, PEDS, PLAYER, POLICE, TRAFFIC, VIEW, WORLD } from './config.js';
 import { angleDiff, clamp, distance, randomInt, randomPick, shuffle } from './random.js';
 import { PLACES, buildCity, buildingAt, collideBuildings, districtAt, nearestRoad, onRoad } from './city.js';
+import { cancelRace, cancelTaxi, createPackages, createRace, createTaxi, updatePackages, updateRace, updateTaxi } from './side.js';
+import { createWeaponState, fireWeapon, giveWeapon, syncAmmo } from './weapons.js';
+import { clampSpecialSpeed, parkSpecialVehicles, steerRateOf } from './vehicles.js';
+import { createAmbient, updateAmbient } from './ambient.js';
+import { spawnBankThugs, updateMissions56 } from './missions2.js';
 
 export const EVENT_SHOT = 1;
 export const EVENT_PUNCH = 2;
@@ -88,6 +93,16 @@ export function createWorld(random) {
     // Mission 4's getaway clock; 0 means no clock is running.
     missionTimer: 0,
     maraRiding: false,
+    // Mission 5's vault hold, in seconds: how long Rico has stood in the
+    // vault room without stepping out.
+    missionHold: 0,
+    // The side of the city that pays between missions: the taxi, the race,
+    // the hidden packages, and the ledger the phone shows.
+    stats: { cashEarned: 0, faresDone: 0, racesWon: 0, bestRace: null, packagesFound: 0 },
+    taxi: createTaxi(),
+    race: createRace(),
+    packages: [],
+    ambient: null,
     district: 'Downtown',
     elapsed: 0,
     carsDriven: 0,
@@ -104,6 +119,10 @@ export function createWorld(random) {
     health: PLAYER.health, cash: 150, armed: false, ammo: 0,
     inCar: null, punchTimer: 0, fireTimer: 0, bustTimer: 0,
     regenTimer: 0, dead: false,
+    // The armoury: which gun is in hand, which guns are owned, and each
+    // gun's own ammo. The pistol starts owned with a full box; the shotgun
+    // and the SMG are found as pickups.
+    ...createWeaponState(),
   };
   state.player = player;
   state.city = city;
@@ -286,6 +305,13 @@ export function createWorld(random) {
     player.fireTimer = 0;
     player.bustTimer = 0;
     player.dead = false;
+    // A fresh armoury: fists, then a pistol with a full box once Mara hands
+    // it over; the shotgun and the SMG are found again each visit.
+    const freshArms = createWeaponState();
+    player.weapon = freshArms.weapon;
+    player.owned = freshArms.owned;
+    player.ammoByWeapon = freshArms.ammoByWeapon;
+    player.shotCount = 0;
     state.cash = 150;
     state.missionIndex = 0;
     state.missionStep = 0;
@@ -301,6 +327,15 @@ export function createWorld(random) {
     state.thugsLeft = 0;
     state.missionTimer = 0;
     state.maraRiding = false;
+    state.missionHold = 0;
+    // A fresh side of the city: the ledger starts at zero, the taxi is
+    // waiting for its first request, the race flag is up, the packages are
+    // hidden again, and the fishermen are back on their piers.
+    state.stats = { cashEarned: 0, faresDone: 0, racesWon: 0, bestRace: null, packagesFound: 0 };
+    state.taxi = createTaxi();
+    state.race = createRace();
+    state.packages = createPackages(random);
+    state.ambient = createAmbient(city);
     state.district = 'Downtown';
     state.elapsed = 0;
     state.cars = [];
@@ -331,28 +366,36 @@ export function createWorld(random) {
     state.cars.push(comet);
     state.comet = comet;
     // A few pickups to find while exploring: health at the hospital, ammo at
-    // the docks and the warehouse, cash tucked into the park.
+    // the docks and the warehouse, cash tucked into the park — and the two
+    // extra guns: the shotgun at the docks, the SMG at the warehouse.
     state.pickups.push(
       { x: PLACES.hospital.x, y: PLACES.hospital.y + 90, kind: 'health', amount: 0, active: true },
       { x: PLACES.docks.x + 60, y: PLACES.docks.y + 40, kind: 'ammo', amount: 0, active: true },
       { x: PLACES.warehouse.x + 120, y: PLACES.warehouse.y, kind: 'ammo', amount: 0, active: true },
       { x: PLACES.park.x, y: PLACES.park.y + 60, kind: 'cash', amount: 0, active: true },
+      { x: PLACES.docks.x - 60, y: PLACES.docks.y + 80, kind: 'shotgun', amount: 0, active: true },
+      { x: PLACES.warehouse.x - 120, y: PLACES.warehouse.y + 40, kind: 'smg', amount: 0, active: true },
     );
+    // The special rides: three bikes and two trucks, parked around the city.
+    parkSpecialVehicles(random, state);
   }
 
   function missionComplete() {
     const mission = MISSIONS[state.missionIndex];
     player.cash += mission.reward;
     state.cash = player.cash;
+    state.stats.cashEarned += mission.reward;
     pendingEvents |= EVENT_MISSION;
     showBanner(`MISSION PASSED  ·  +$${mission.reward}`, 3.2);
     state.missionIndex += 1;
     state.missionStep = 0;
     state.missionTimer = 0;
+    state.missionHold = 0;
     state.maraRiding = false;
     if (state.missionIndex === 1) {
       player.armed = true;
-      player.ammo = PLAYER.startAmmo;
+      player.ammoByWeapon.pistol = PLAYER.startAmmo;
+      syncAmmo(player);
       setMissionText(MISSIONS[1].brief);
       setMissionTarget(PLACES.beachLot.x, PLACES.beachLot.y, PLACES.beachLot.label);
       showToast('Mara gave you a pistol. Watch the cops.', 4);
@@ -363,6 +406,14 @@ export function createWorld(random) {
       setMissionText(MISSIONS[3].brief);
       setMissionTarget(PLACES.club.x, PLACES.club.y, PLACES.club.label);
       showToast('Los Diablos are coming for the club. Get there.', 4);
+    } else if (state.missionIndex === 4) {
+      setMissionText(MISSIONS[4].brief);
+      setMissionTarget(PLACES.bank.x, PLACES.bank.y, PLACES.bank.label);
+      showToast('The bank job is next. Solmar Trust, north-east.', 4);
+    } else if (state.missionIndex === 5) {
+      setMissionText(MISSIONS[5].brief);
+      setMissionTarget(PLACES.docks.x, PLACES.docks.y, PLACES.docks.label);
+      showToast('One last stand at the docks. End it, Rico.', 4);
     } else {
       setMissionText('Solmar Bay is yours. Free roam — earn cash, dodge the law, live large.');
       setMissionTarget(PLACES.club.x, PLACES.club.y, PLACES.club.label);
@@ -470,6 +521,22 @@ export function createWorld(random) {
           showToast('TOO SLOW — THEY ARE COMING BACK', 3);
         }
       }
+    } else if (state.missionIndex === 4 || state.missionIndex === 5) {
+      // M5 · The Bank Job and M6 · King of the Bay live in their own module:
+      // the world hands it its own helpers and lets it drive the steps.
+      updateMissions56(dt, {
+        state,
+        player,
+        random,
+        distance,
+        addCrime,
+        showToast,
+        showBanner,
+        setMissionText,
+        setMissionTarget,
+        missionComplete,
+        spawnThugsAt,
+      });
     }
   }
 
@@ -635,19 +702,24 @@ export function createWorld(random) {
     }
     const car = player.inCar;
     if (car) {
-      // Driving.
+      // Driving. A bike accelerates harder and turns sharper than a car, a
+      // truck the opposite: the car carries its own numbers, so the same
+      // code drives all three without a special case for each.
       const forward = { x: Math.cos(car.angle), y: Math.sin(car.angle) };
-      if (input.up) car.speed += CAR.accel * dt;
+      const accel = car.accel || CAR.accel;
+      const steerRate = steerRateOf(car);
+      if (input.up) car.speed += accel * dt;
       if (input.down) {
         if (car.speed > 10) car.speed -= CAR.brake * dt;
-        else car.speed -= CAR.accel * 0.55 * dt;
+        else car.speed -= accel * 0.55 * dt;
       }
       car.speed -= car.speed * 0.45 * dt;
       if (input.handbrake) car.speed -= car.speed * 2.2 * dt;
+      clampSpecialSpeed(car);
       car.speed = clamp(car.speed, -CAR.reverseMax, car.maxSpeed);
       const steer = (input.left ? -1 : 0) + (input.right ? 1 : 0);
       const steerFactor = clamp(Math.abs(car.speed) / 160, 0, 1) * (car.speed < 0 ? -1 : 1);
-      car.angle += steer * CAR.steerRate * steerFactor * dt;
+      car.angle += steer * steerRate * steerFactor * dt;
       const nx = car.x + Math.cos(car.angle) * car.speed * dt;
       const ny = car.y + Math.sin(car.angle) * car.speed * dt;
       car.x = clamp(nx, 40, WORLD.width - 40);
@@ -732,10 +804,12 @@ export function createWorld(random) {
       }
       return EVENT_PUNCH;
     }
-    if (input.shootHeld && player.armed && player.ammo > 0 && player.fireTimer <= 0) {
-      player.fireTimer = PLAYER.fireInterval;
-      player.ammo -= 1;
-      return shootAt(player.x, player.y, input.aimX, input.aimY, PLAYER.shootDamage, true);
+    if (input.shootHeld && player.armed && player.fireTimer <= 0) {
+      // The gun in hand decides the shot: one straight pistol round, a fan
+      // of six shotgun pellets, or a fast SMG stream. The module spends the
+      // ammo, sets the next interval, and fires each pellet through the
+      // world's own raycast.
+      return fireWeapon(player, input.aimX, input.aimY, (ax, ay, damage) => shootAt(player.x, player.y, ax, ay, damage, true));
     }
     return 0;
   }
@@ -893,10 +967,13 @@ export function createWorld(random) {
     }
   }
 
-  /** Is a thug fight in progress right now (warehouse or club defence)? */
+  /** Is a thug fight in progress right now (warehouse, club defence, bank
+   * hold-up or the docks' last stand)? The thugs only shoot when one is. */
   function combatActive() {
     return (state.missionIndex === 2 && state.missionStep === 1)
-      || (state.missionIndex === 3 && state.missionStep === 1);
+      || (state.missionIndex === 3 && state.missionStep === 1)
+      || (state.missionIndex === 4 && state.missionStep === 1)
+      || (state.missionIndex === 5 && state.missionStep === 1);
   }
 
   function updatePed(dt, ped) {
@@ -911,6 +988,13 @@ export function createWorld(random) {
     }
     if (ped.state === 'idle') {
       // A stroller stopped to look around; stand still until the timer ends.
+      ped.stateTimer -= dt;
+      if (ped.stateTimer <= 0) ped.state = 'walk';
+      return;
+    }
+    if (ped.state === 'wait') {
+      // A taxi passenger waiting at the kerb: stand still until the fare is
+      // collected or cancelled, then walk off.
       ped.stateTimer -= dt;
       if (ped.stateTimer <= 0) ped.state = 'walk';
       return;
@@ -1040,8 +1124,10 @@ export function createWorld(random) {
       if (car.dead) continue;
       if (car.kind === 'traffic') updateTrafficCar(dt, car);
       else if (car.kind === 'police') updatePoliceCar(dt, car);
-      else if (car.kind === 'parked' || car.kind === 'sports') {
+      else if (car.kind === 'parked' || car.kind === 'sports' || car.kind === 'bike' || car.kind === 'truck') {
         // Parked cars sit still; their speed decays if they were rolling.
+        // Bikes and trucks park the same way — the race rivals are the only
+        // cars this loop does not move, and the race module drives those.
         car.speed *= 0.9;
       }
       if (pc && car !== pc && !car.dead) {
@@ -1143,11 +1229,17 @@ export function createWorld(random) {
           state.cash = player.cash;
           showToast('STASH FOUND — +$100', 2);
         } else if (pickup.kind === 'ammo') {
-          player.ammo += 30;
-          showToast('+30 AMMO', 2);
+          player.ammoByWeapon.pistol += 30;
+          if (player.weapon === 'pistol') syncAmmo(player);
+          showToast('+30 PISTOL AMMO', 2);
         } else if (pickup.kind === 'health') {
           player.health = Math.min(PLAYER.health, player.health + 40);
           showToast('+40 HEALTH', 2);
+        } else if (pickup.kind === 'shotgun' || pickup.kind === 'smg') {
+          // A new gun: it joins the armoury, loads up, and goes straight
+          // into Rico's hands.
+          giveWeapon(player, pickup.kind);
+          showToast(pickup.kind === 'shotgun' ? 'SHOTGUN FOUND — 1/2/3 TO SWITCH' : 'SMG FOUND — 1/2/3 TO SWITCH', 3);
         }
       }
     }
@@ -1200,6 +1292,12 @@ export function createWorld(random) {
     if (!harmless) {
       events |= updatePlayer(dt, input);
       updateMission(dt);
+      // The side of the city that pays: a taxi fare, a street race, and the
+      // hidden packages, all running alongside the story.
+      const sideApi = { random, showToast, showBanner };
+      events |= updateTaxi(dt, state, sideApi);
+      events |= updateRace(dt, state, sideApi);
+      events |= updatePackages(dt, state, sideApi);
       events |= pendingEvents;
       pendingEvents = 0;
       if (player.health <= 0) {
@@ -1215,6 +1313,7 @@ export function createWorld(random) {
     updatePickups(dt);
     updateParticles(dt);
     updateHeat();
+    updateAmbient(dt, state, state.ambient);
     state.district = districtAt(player.x, player.y);
     updateCamera(dt);
     return events;
@@ -1240,6 +1339,11 @@ export function createWorld(random) {
     player.angle = -Math.PI / 2;
     state.camera.x = player.x;
     state.camera.y = player.y;
+    // A wasted or busted Rico loses his fare and his race along with his
+    // cash: the passenger walks off, the rivals drive away, and the flag is
+    // back up for the next attempt.
+    cancelTaxi(state, random);
+    cancelRace(state);
     showToast(reason === 'busted' ? `BUSTED — you lost $${lost}` : `WASTED — you lost $${lost}`, 3);
   }
 
@@ -1291,6 +1395,12 @@ export function createWorld(random) {
         } else if (index === 3) {
           setMissionText(MISSIONS[3].brief);
           setMissionTarget(PLACES.club.x, PLACES.club.y, PLACES.club.label);
+        } else if (index === 4) {
+          setMissionText(MISSIONS[4].brief);
+          setMissionTarget(PLACES.bank.x, PLACES.bank.y, PLACES.bank.label);
+        } else if (index === 5) {
+          setMissionText(MISSIONS[5].brief);
+          setMissionTarget(PLACES.docks.x, PLACES.docks.y, PLACES.docks.label);
         }
       },
       spawnPolice(n) {
@@ -1301,6 +1411,12 @@ export function createWorld(random) {
       },
       spawnClubThugs() {
         spawnClubThugs();
+      },
+      spawnBankThugs() {
+        spawnBankThugs({
+          state, player, random, distance, addCrime, showToast, showBanner,
+          setMissionText, setMissionTarget, missionComplete, spawnThugsAt,
+        });
       },
     },
   };

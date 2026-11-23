@@ -87,3 +87,38 @@ export function distance(ax, ay, bx, by) {
   const dy = by - ay;
   return Math.sqrt(dx * dx + dy * dy);
 }
+
+/** Pick n distinct elements of an array, in shuffled order, with the seeded
+ * generator. Used where the city needs a spread of spots — package hides,
+ * taxi stands, race rivals — without ever picking the same one twice. */
+export function pickN(random, array, n) {
+  const shuffled = shuffle(random, array);
+  return shuffled.slice(0, Math.min(n, shuffled.length));
+}
+
+/** Move an angle toward a target by at most `maxStep` radians, taking the
+ * shortest way around. A steering helper for anything that chases a point —
+ * race rivals, the getaway driver, a thug closing in. */
+export function angleLerp(a, b, maxStep) {
+  const d = angleDiff(a, b);
+  if (Math.abs(d) <= maxStep) return b;
+  return a + Math.sign(d) * maxStep;
+}
+
+/** A random sign, +1 or -1, from the seeded generator. */
+export function randSign(random) {
+  return random() < 0.5 ? -1 : 1;
+}
+
+/** A random point inside a rectangle, from the seeded generator. */
+export function randomPointInRect(random, x0, y0, x1, y1) {
+  return {
+    x: x0 + random() * (x1 - x0),
+    y: y0 + random() * (y1 - y0),
+  };
+}
+
+/** The bearing from one point to another, in radians. */
+export function angleTo(ax, ay, bx, by) {
+  return Math.atan2(by - ay, bx - ax);
+}

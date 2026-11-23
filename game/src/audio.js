@@ -173,5 +173,33 @@ export function createAudio() {
       tone(880, 0.09, 'square', 0.09);
       setTimeout(() => tone(660, 0.12, 'square', 0.09), 110);
     },
+    /** Shotgun: a fat, low blast — more noise and more body than the pistol. */
+    shotgun() {
+      noise(0.28, 0.42, 900);
+      tone(120, 0.22, 'square', 0.2, 40);
+    },
+    /** SMG: a short, sharp crack, higher and thinner than the pistol. */
+    smg() {
+      noise(0.06, 0.22, 3200);
+      tone(240, 0.05, 'square', 0.08, 90);
+    },
+    /** Taxi chime: two warm notes when a fare is offered or paid. */
+    taxi() {
+      tone(784, 0.12, 'triangle', 0.16);
+      setTimeout(() => tone(1047, 0.16, 'triangle', 0.16), 110);
+    },
+    /** Race beep: a countdown tick, and a higher one for the green light. */
+    raceBeep(go) {
+      tone(go ? 1047 : 659, go ? 0.3 : 0.12, 'square', 0.12);
+    },
+    /** Package blip: a bright little sparkle when a hidden parcel is found. */
+    packageBlip() {
+      const notes = [880, 1175, 1568];
+      notes.forEach((freq, i) => setTimeout(() => tone(freq, 0.1, 'sine', 0.14), i * 60));
+    },
+    /** Phone click: a soft tap when the phone opens or closes. */
+    phoneClick() {
+      tone(520, 0.06, 'sine', 0.1);
+    },
   };
 }

@@ -54,6 +54,106 @@ export const CAR = {
   health: 100,
 };
 
+/** The two special rides parked around the city: a fast, fragile motorbike and
+ * a slow, tough delivery truck. Each has its own length, width, acceleration,
+ * top speed and health; the world reads them off the car itself. */
+export const VEHICLES = {
+  bike: {
+    kind: 'bike',
+    length: 34,
+    width: 14,
+    accel: 430,
+    maxSpeed: 720,
+    reverseMax: 140,
+    health: 60,
+    steerRate: 3.4,
+    color: '#2fd9c9',
+  },
+  truck: {
+    kind: 'truck',
+    length: 72,
+    width: 30,
+    accel: 200,
+    maxSpeed: 380,
+    reverseMax: 120,
+    health: 220,
+    steerRate: 1.9,
+    color: '#8a6d4b',
+  },
+};
+
+/** Weapon tuning. The pistol is Rico's starting gun; the shotgun and the SMG
+ * are found as pickups — the shotgun at the docks, the SMG at the warehouse. */
+export const WEAPONS = {
+  pistol: {
+    name: 'PISTOL',
+    damage: 34,
+    interval: 0.24,
+    pellets: 1,
+    spread: 0,
+    range: 560,
+    pickupAmmo: 30,
+  },
+  shotgun: {
+    name: 'SHOTGUN',
+    damage: 16,
+    interval: 0.9,
+    pellets: 6,
+    spread: 0.35,
+    range: 320,
+    pickupAmmo: 12,
+  },
+  smg: {
+    name: 'SMG',
+    damage: 14,
+    interval: 0.09,
+    pellets: 1,
+    spread: 0.06,
+    range: 420,
+    pickupAmmo: 60,
+  },
+};
+
+/** Taxi fares: the passenger's patience, the fare band, and how the clock is
+ * set from the trip's length. Fares only come while Rico is driving. */
+export const TAXI = {
+  fareMin: 80,
+  fareMax: 200,
+  pickupRadius: 60,
+  dropoffRadius: 70,
+  requestDelayMin: 8,
+  requestDelayMax: 15,
+  baseTime: 20,
+  timePerUnit: 240,
+};
+
+/** The street race: a downtown loop, a countdown, and the prize for winning. */
+export const RACE = {
+  reward: 600,
+  countdownSeconds: 3,
+  checkpointRadius: 70,
+  rivalSpeed: 430,
+  // The cooldown after a race ends: the finish line is also the start
+  // line, so without a pause the winner would be entered in the next race
+  // before they could drive away.
+  cooldown: 10,
+  checkpoints: [
+    { x: 1520, y: 1520 },
+    { x: 2160, y: 1520 },
+    { x: 2160, y: 880 },
+    { x: 880, y: 880 },
+    { x: 880, y: 1520 },
+    { x: 1520, y: 1520 },
+  ],
+};
+
+/** The hidden packages: twenty gold parcels tucked around the city, $50 each. */
+export const PACKAGES = {
+  count: 20,
+  reward: 50,
+  radius: 40,
+};
+
 export const TRAFFIC = {
   count: 28,
   minSpeed: 110,
@@ -81,8 +181,10 @@ export const POLICE = {
   heatRange: 520,
 };
 
-/** The four-mission story. The first three are Rico's jobs for Mara Solano; the
- * fourth is the crew's last stand at her club, then a timed run to the marina. */
+/** The six-mission story. The first three are Rico's jobs for Mara Solano; the
+ * fourth is the crew's last stand at her club, then a timed run to the marina;
+ * the fifth is a bank job with a hold-up and a getaway; the sixth is the turf
+ * war that decides who owns Solmar Bay. */
 export const MISSIONS = [
   {
     id: 'pickup',
@@ -108,12 +210,38 @@ export const MISSIONS = [
     brief: 'Los Diablos are hitting the Starfish Club. Hold the line, then get Mara to the marina before the cops lock the city down.',
     reward: 4000,
   },
+  {
+    id: 'bankjob',
+    name: 'M5 · The Bank Job',
+    brief: 'Mara wants the Solmar Trust vault. Hold the vault room, grab the cash, lose the cops, get back to her.',
+    reward: 6000,
+  },
+  {
+    id: 'king',
+    name: 'M6 · King of the Bay',
+    brief: 'Los Diablos are making their last stand at the docks. Wipe them out, take the stash, and come home king.',
+    reward: 8000,
+  },
 ];
 
 /** Mission 4's numbers: the defence wave, and the getaway clock. */
 export const LAST_STAND = {
   thugs: 6,
   getawaySeconds: 75,
+  triggerRadius: 240,
+};
+
+/** Mission 5's numbers: the vault hold, and the thugs who guard the bank. */
+export const BANK_JOB = {
+  thugs: 3,
+  holdSeconds: 3,
+  triggerRadius: 240,
+  vaultRadius: 60,
+};
+
+/** Mission 6's numbers: the turf war at the docks. */
+export const TURF_WAR = {
+  thugs: 8,
   triggerRadius: 240,
 };
 
@@ -158,6 +286,18 @@ export const PALETTE = {
   heatWarm: '#f2c94c',
   heatHot: '#e5534b',
   headlight: 'rgba(255, 240, 180, 0.20)',
+  // The side activities: taxi yellow, race orange, package gold, the bike's
+  // teal and the truck's brown, the phone's dark panel, vendor awnings and
+  // the fishermen's khaki.
+  taxi: '#ffd23d',
+  race: '#ff8c2d',
+  packageGold: '#ffd700',
+  bike: '#2fd9c9',
+  truck: '#8a6d4b',
+  phonePanel: '#0d1526',
+  vendorAwning: '#e5534b',
+  vendorCart: '#7a5a3a',
+  fisherman: '#5b7a8c',
 };
 
 export const FONT = 'system-ui, -apple-system, "Segoe UI", sans-serif';

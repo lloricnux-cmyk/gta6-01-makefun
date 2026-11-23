@@ -8,9 +8,14 @@
 // a golden-hour wash swells around sunset (timeOfDay 0.75) and a cool night veil
 // deepens after dark, so the same street reads differently at noon, dusk and
 // midnight — and at night the player's headlights cut a cone through it.
-import { MISSIONS, PALETTE, VIEW, WORLD } from './config.js';
+import { MISSIONS, PACKAGES, PALETTE, RACE, VIEW, WORLD } from './config.js';
 import { PLACES, districtAt, parkRect } from './city.js';
 import { clamp } from './random.js';
+import { drawSide } from './side.js';
+import { drawVehicleShape } from './vehicles.js';
+import { drawAmbient } from './ambient.js';
+import { drawPhone } from './phone.js';
+import { weaponName } from './weapons.js';
 
 export const SCREEN_TITLE = 'title';
 export const SCREEN_PLAY = 'play';
@@ -265,6 +270,11 @@ export function createRenderer(canvas) {
 
   function drawCarShape(car, state) {
     const ctx = context;
+    // Bikes and trucks have their own shapes, drawn by their own module.
+    if (car.kind === 'bike' || car.kind === 'truck') {
+      drawVehicleShape(ctx, car, state);
+      return;
+    }
     const len = 52;
     const wid = 26;
     ctx.save();
@@ -411,7 +421,7 @@ export function createRenderer(canvas) {
   function drawBeacon(state) {
     const ctx = context;
     const target = state.missionTarget;
-    if (!target || state.missionIndex >= 4) return;
+    if (!target || state.missionIndex >= 6) return;
     const pulse = 1 + Math.sin(state.time * 4) * 0.15;
     const bob = Math.sin(state.time * 3) * 6;
     ctx.fillStyle = 'rgba(242,201,76,0.12)';
@@ -542,12 +552,31 @@ export function createRenderer(canvas) {
     }
     // Mission target.
     const target = state.missionTarget;
-    if (target && state.missionIndex < 4) {
+    if (target && state.missionIndex < 6) {
       const pulse = 5 + Math.sin(state.time * 5) * 2;
       ctx.fillStyle = PALETTE.beacon;
       ctx.beginPath();
       ctx.arc(mx + target.x * scale, my + target.y * scale, pulse, 0, Math.PI * 2);
       ctx.fill();
+    }
+    // Taxi fare: yellow at the pickup, green at the drop-off.
+    if (state.taxi && (state.taxi.phase === 'toPickup' || state.taxi.phase === 'toDropoff')) {
+      const tx = state.taxi.phase === 'toPickup' ? state.taxi.px : state.taxi.dx;
+      const ty = state.taxi.phase === 'toPickup' ? state.taxi.py : state.taxi.dy;
+      ctx.fillStyle = state.taxi.phase === 'toPickup' ? PALETTE.taxi : PALETTE.green;
+      ctx.beginPath();
+      ctx.arc(mx + tx * scale, my + ty * scale, 3.5, 0, Math.PI * 2);
+      ctx.fill();
+    }
+    // Race: the next checkpoint, in orange.
+    if (state.race && state.race.phase === 'running') {
+      const point = RACE.checkpoints[state.race.index];
+      if (point) {
+        ctx.fillStyle = PALETTE.race;
+        ctx.beginPath();
+        ctx.arc(mx + point.x * scale, my + point.y * scale, 3.5, 0, Math.PI * 2);
+        ctx.fill();
+      }
     }
     // Police.
     for (const car of state.cars) {
@@ -626,17 +655,36 @@ export function createRenderer(canvas) {
     }
     drawHeatBar(state);
     // Mission objective, top centre.
-    const mission = state.missionIndex < 4 ? `MISSION ${state.missionIndex + 1}/4` : 'FREE ROAM';
+    const mission = state.missionIndex < 6 ? `MISSION ${state.missionIndex + 1}/6` : 'FREE ROAM';
     outlineText(mission, VIEW.width / 2, 36, 15, PALETTE.gold, 'center', 'bold ');
     outlineText(state.missionText, VIEW.width / 2, 62, 17, '#fff', 'center');
-    if (state.missionTarget && state.missionIndex < 4) {
+    if (state.missionTarget && state.missionIndex < 6) {
       const d = Math.round(Math.hypot(player.x - state.missionTarget.x, player.y - state.missionTarget.y));
       outlineText(`${state.missionTarget.label} · ${d}m`, VIEW.width / 2, 86, 14, PALETTE.muted, 'center');
     }
-    // Getaway clock, big and red while it runs.
+    // The side of the city that pays: packages found, fares driven, races
+    // won, under the objective.
+    const found = state.packages ? state.packages.filter((p) => p.found).length : 0;
+    const fares = state.stats ? state.stats.faresDone : 0;
+    const races = state.stats ? state.stats.racesWon : 0;
+    outlineText(`PACKAGES ${found}/${PACKAGES.count} · FARES ${fares} · RACES ${races}`, VIEW.width / 2, 108, 13, 'rgba(255,255,255,0.65)', 'center', 'bold ');
+    // Taxi and race status, while either is running.
+    if (state.taxi && state.taxi.phase === 'toDropoff') {
+      outlineText(`TAXI — $${state.taxi.fare} · ${Math.max(0, Math.ceil(state.taxi.timer))}s`, VIEW.width / 2, 132, 16, PALETTE.taxi, 'center', 'bold ');
+    } else if (state.taxi && state.taxi.phase === 'toPickup') {
+      outlineText('TAXI — PICK UP THE PASSENGER', VIEW.width / 2, 132, 16, PALETTE.taxi, 'center', 'bold ');
+    }
+    if (state.race && state.race.phase === 'countdown') {
+      outlineText(`RACE IN ${Math.max(1, Math.ceil(state.race.countdown))}…`, VIEW.width / 2, 156, 22, PALETTE.race, 'center', 'bold ');
+    } else if (state.race && state.race.phase === 'running') {
+      outlineText(`RACE — CHECKPOINT ${state.race.index}/6 · ${state.race.timer.toFixed(1)}s`, VIEW.width / 2, 156, 16, PALETTE.race, 'center', 'bold ');
+    }
+    // Getaway clock, big and red while it runs. It sits below the status
+    // lines, and the toast drops one slot lower while the clock is up, so
+    // the two never print over each other.
     if (state.missionTimer > 0) {
       const seconds = Math.max(0, Math.ceil(state.missionTimer));
-      outlineText(`${seconds}s`, VIEW.width / 2, 122, 30, seconds <= 10 ? PALETTE.red : PALETTE.gold, 'center', 'bold ');
+      outlineText(`${seconds}s`, VIEW.width / 2, 196, 30, seconds <= 10 ? PALETTE.red : PALETTE.gold, 'center', 'bold ');
     }
     // Speed and weapon, bottom right.
     if (player.inCar) {
@@ -656,13 +704,17 @@ export function createRenderer(canvas) {
         outlineText('MARA IS RIDING WITH YOU', VIEW.width - 24, VIEW.height - 92, 15, PALETTE.gold, 'right', 'bold ');
       }
     } else {
-      outlineText(player.armed ? `PISTOL · ${player.ammo}` : 'FISTS', VIEW.width - 24, VIEW.height - 40, 22, '#fff', 'right', 'bold ');
+      outlineText(player.armed ? `${weaponName(player)} · ${player.ammo}` : 'FISTS', VIEW.width - 24, VIEW.height - 40, 22, '#fff', 'right', 'bold ');
+      if (player.armed) {
+        text('1/2/3 — switch gun', VIEW.width - 24, VIEW.height - 64, 13, 'rgba(255,255,255,0.6)', 'right');
+      }
     }
     // District, bottom left above the minimap.
     text(`YOU ARE IN ${state.district || districtAt(player.x, player.y)}`, MINIMAP.x, MINIMAP.y - 32, 14, PALETTE.muted, 'left', 'bold ');
-    // Toast, centre.
+    // Toast, centre, below the status lines — and one slot lower while the
+    // getaway clock is up, so the two never print over each other.
     if (state.toastTimer > 0) {
-      outlineText(state.toast, VIEW.width / 2, 150, 24, PALETTE.gold, 'center', 'bold ');
+      outlineText(state.toast, VIEW.width / 2, state.missionTimer > 0 ? 228 : 196, 24, PALETTE.gold, 'center', 'bold ');
     }
     // Mission passed banner.
     if (state.bannerTimer > 0) {
@@ -671,7 +723,7 @@ export function createRenderer(canvas) {
       outlineText(state.missionBanner, VIEW.width / 2, 300, 34, PALETTE.gold, 'center', 'bold ');
     }
     // Controls hint.
-    text('WASD move · E enter car · H horn · Click shoot · Space punch · Shift run · P pause · M mute', VIEW.width / 2, VIEW.height - 12, 13, 'rgba(255,255,255,0.6)', 'center');
+    text('WASD move · E enter car · H horn · Click shoot · Space punch · Shift run · Tab phone · P pause · M mute', VIEW.width / 2, VIEW.height - 12, 13, 'rgba(255,255,255,0.6)', 'center');
   }
 
   function drawPanel(title, lines, prompt, accent) {
@@ -698,14 +750,18 @@ export function createRenderer(canvas) {
   /** The pause menu doubles as the "How to play" recap: controls, the goal,
    * and where the story stands, so a returning player never has to guess. */
   function drawPausePanel(state, ui) {
-    const missionLine = state.missionIndex < 4
-      ? `Mission ${state.missionIndex + 1}/4 — ${MISSIONS[state.missionIndex].name}`
+    const missionLine = state.missionIndex < 6
+      ? `Mission ${state.missionIndex + 1}/6 — ${MISSIONS[state.missionIndex].name}`
       : 'All missions complete — free roam.';
     drawPanel('PAUSED · HOW TO PLAY', [
       'WASD / arrows — move on foot, drive in a car',
       'E — enter / steal a car (or get out)      H — horn',
       'Mouse — aim, click — shoot      Space — punch',
       'Shift — run      P — pause      M — mute sound',
+      'Tab — phone: missions, ledger, guns',
+      '1 / 2 / 3 — switch gun (pistol, shotgun, SMG)',
+      'Drive for taxi fares, race at the boulevard,',
+      'find 20 hidden packages — all of it pays cash.',
       'Follow the yellow beacon. Missions pay cash.',
       'Stars are your wanted level; the HEAT bar shows',
       'how close the cops are. Lay low and it cools off.',
@@ -723,10 +779,10 @@ export function createRenderer(canvas) {
     text('Rico Vega is out of prison and back in Solmar Bay. Mara Solano has work for him —', VIEW.width / 2, 268, 19, PALETTE.muted, 'center');
     text('packages to move, cars to steal, scores to settle. The city is yours. The law is not.', VIEW.width / 2, 294, 19, PALETTE.muted, 'center');
     text('WASD / arrows — move & drive      E — enter / steal a car      Mouse — aim, click — shoot', VIEW.width / 2, 352, 18, PALETTE.text, 'center');
-    text('Space — punch      Shift — run      H — horn      P — pause      M — mute', VIEW.width / 2, 380, 18, PALETTE.text, 'center');
-    text('4 missions · traffic & pedestrians · wanted level & police · save keeps your cash', VIEW.width / 2, 424, 17, PALETTE.muted, 'center');
+    text('Space — punch      Shift — run      H — horn      Tab — phone      1/2/3 — switch gun      P — pause      M — mute', VIEW.width / 2, 380, 18, PALETTE.text, 'center');
+    text('6 missions · taxi fares · street races · 20 hidden packages · bikes & trucks · wanted level & police · save keeps your cash', VIEW.width / 2, 424, 17, PALETTE.muted, 'center');
     const prompt = ui.hasSave
-      ? `ENTER — start story      C — continue ($${ui.saveCash}, mission ${ui.saveMission}/4)`
+      ? `ENTER — start story      C — continue ($${ui.saveCash}, mission ${ui.saveMission}/6)`
       : 'ENTER or click — start story';
     outlineText(prompt, VIEW.width / 2, 500, 24, PALETTE.gold, 'center', 'bold ');
     if (ui.best > 0) text(`Best cash: $${ui.best.toLocaleString('en-US')}`, VIEW.width / 2, 544, 17, PALETTE.muted, 'center');
@@ -756,6 +812,10 @@ export function createRenderer(canvas) {
     drawPlaceLabels(state, vis);
     drawPickups(state);
     drawBeacon(state);
+    // The side of the city: taxi markers, race checkpoints, hidden
+    // packages, and the quiet life — fishermen, vendors, lamps.
+    drawSide(context, state);
+    drawAmbient(context, state, state.ambient);
     // Cars and pedestrians, lowest y first so nearer things overlap.
     const drawables = [];
     for (const car of state.cars) if (!car.dead) drawables.push({ y: car.y, draw: () => drawCarShape(car, state) });
@@ -773,7 +833,9 @@ export function createRenderer(canvas) {
     }
     drawHud(state, ui);
     drawMinimap(state);
-    if (screen === SCREEN_PAUSED) {
+    if (ui.phoneOpen) {
+      drawPhone(context, state);
+    } else if (screen === SCREEN_PAUSED) {
       drawPausePanel(state, ui);
     } else if (screen === SCREEN_WASTED) {
       drawPanel('WASTED', [`You lost $${ui.lost}.`, 'Mara is not impressed.'], 'ENTER — wake up at Solmar General', PALETTE.red);

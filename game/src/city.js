@@ -23,6 +23,10 @@ export const PLACES = {
   park: { x: 1040, y: 1040, label: 'Palm Park' },
   // The marina, south-east, where mission 4 ends.
   marina: { x: 2800, y: 2020, label: 'The Marina' },
+  // Solmar Trust, the bank mission 5 hits, on the north-east boulevard.
+  bank: { x: 2160, y: 560, label: 'Solmar Trust' },
+  // The street race starts on the downtown boulevard.
+  raceStart: { x: 1520, y: 1520, label: 'Race Start' },
 };
 
 /** The named districts, for the HUD's "you are here" line. */
@@ -60,6 +64,9 @@ export function buildCity(random) {
   const buildings = [];
   const trees = [];
   const piers = [];
+  const lamps = [];
+  const stalls = [];
+  const fishing = [];
   const half = WORLD.roadHalf + WORLD.sidewalk;
   for (let ix = 0; ix < WORLD.roadsX.length - 1; ix += 1) {
     for (let iy = 0; iy < WORLD.roadsY.length - 1; iy += 1) {
@@ -143,8 +150,61 @@ export function buildCity(random) {
   for (let i = 0; i < 3; i += 1) {
     const px = 2560 + i * 170;
     piers.push({ x: px, y: WORLD.oceanY - 10, w: 26, h: 150 });
+    // A fisherman stands at the end of each pier, rod over the water.
+    fishing.push({ x: px + 13, y: WORLD.oceanY + 128, phase: random() * Math.PI * 2 });
   }
-  return { buildings, trees, piers };
+  // Street lamps along the roads: one at every other crossing, so the night
+  // has pools of light instead of one flat veil. The renderer lights them
+  // after dark; the list is built once, here, from the seeded generator.
+  for (let ix = 0; ix < WORLD.roadsX.length; ix += 1) {
+    for (let iy = 0; iy < WORLD.roadsY.length; iy += 1) {
+      if ((ix + iy) % 2 !== 0) continue;
+      if (WORLD.roadsY[iy] >= WORLD.beachY) continue;
+      lamps.push({
+        x: WORLD.roadsX[ix] + WORLD.roadHalf + WORLD.sidewalk + 4,
+        y: WORLD.roadsY[iy] - WORLD.roadHalf - WORLD.sidewalk - 4,
+      });
+    }
+  }
+  // Street vendors: a fruit cart at the park, a snack cart on the beach, and
+  // a flower stall by the marina. They stand still all day; the renderer
+  // draws their carts and awnings, and they give the sidewalks a reason to
+  // be busy beyond the walking crowd.
+  stalls.push(
+    { x: 1000, y: 1000, goods: 'fruit', label: 'Fruit Cart' },
+    { x: 1200, y: 2120, goods: 'snacks', label: 'Snack Cart' },
+    { x: 2620, y: 1980, goods: 'flowers', label: 'Flower Stall' },
+  );
+  return { buildings, trees, piers, lamps, stalls, fishing };
+}
+
+/**
+ * Where the twenty hidden packages are tucked: a hand-picked list of quiet
+ * corners — park edges, the beach, the docks, the marina, alleys behind the
+ * downtown towers — shuffled with the seeded generator so the same seed hides
+ * them in the same places every time.
+ */
+export function buildPackageSpots(random) {
+  const candidates = [
+    { x: 920, y: 920 }, { x: 1160, y: 920 }, { x: 920, y: 1160 }, { x: 1160, y: 1160 },
+    { x: 300, y: 2100 }, { x: 700, y: 2140 }, { x: 1500, y: 2100 }, { x: 2100, y: 2130 },
+    { x: 2700, y: 2100 }, { x: 300, y: 1900 }, { x: 260, y: 1700 }, { x: 480, y: 1900 },
+    { x: 2600, y: 1900 }, { x: 2900, y: 1900 }, { x: 600, y: 600 }, { x: 1300, y: 300 },
+    { x: 2000, y: 300 }, { x: 2600, y: 600 }, { x: 300, y: 900 }, { x: 600, y: 1200 },
+    { x: 2500, y: 1200 }, { x: 1300, y: 1700 }, { x: 2000, y: 1700 }, { x: 900, y: 1900 },
+    { x: 1700, y: 600 }, { x: 2400, y: 900 }, { x: 400, y: 300 }, { x: 2900, y: 1200 },
+  ];
+  const picked = [];
+  const order = [];
+  for (let i = 0; i < candidates.length; i += 1) order.push(i);
+  for (let i = order.length - 1; i > 0; i -= 1) {
+    const j = Math.floor(random() * (i + 1));
+    const tmp = order[i];
+    order[i] = order[j];
+    order[j] = tmp;
+  }
+  for (let i = 0; i < 20; i += 1) picked.push(candidates[order[i]]);
+  return picked;
 }
 
 /** The nearest road centre line to a point, and which axis it runs on. */
