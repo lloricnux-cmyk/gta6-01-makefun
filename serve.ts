@@ -58,6 +58,15 @@ function log(method: string, pathname: string, status: number) {
 createServer((request, response) => {
   const method = request.method ?? 'GET';
   const url = new URL(request.url ?? '/', 'http://localhost');
+  // A health check for scripts and for the finalist review: it answers
+  // without touching the file tree, so a monitor never has to fetch a page.
+  if (url.pathname === '/healthz') {
+    const body = JSON.stringify({ ok: true, game: 'solmar-bay' });
+    response.writeHead(200, { 'content-type': 'application/json; charset=utf-8', 'content-length': Buffer.byteLength(body) });
+    log(method, url.pathname, 200);
+    response.end(body);
+    return;
+  }
   let pathname: string;
   try {
     pathname = decodeURIComponent(url.pathname);
