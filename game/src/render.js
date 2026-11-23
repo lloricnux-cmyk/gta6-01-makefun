@@ -2,10 +2,15 @@
 // 1280x720 playfield is scaled to fit the window and centred, the margin filled
 // with the backdrop colour. The camera follows the player with a zoom that opens
 // up while driving. Everything is canvas shapes and text: no images, no network.
+//
 // The sun's angle comes from the world's clock, so shadows and the warm evening
-// tint move as the day passes.
-import { PALETTE, VIEW, WORLD } from './config.js';
-import { parkRect } from './city.js';
+// tint move as the day passes. The light is now a smooth blend, not a switch:
+// a golden-hour wash swells around sunset (timeOfDay 0.75) and a cool night veil
+// deepens after dark, so the same street reads differently at noon, dusk and
+// midnight — and at night the player's headlights cut a cone through it.
+import { MISSIONS, PALETTE, VIEW, WORLD } from './config.js';
+import { PLACES, districtAt, parkRect } from './city.js';
+import { clamp } from './random.js';
 
 export const SCREEN_TITLE = 'title';
 export const SCREEN_PLAY = 'play';
@@ -77,6 +82,18 @@ export function createRenderer(canvas) {
     return Math.max(0, Math.min(1, day * 1.6 + 0.25));
   }
 
+  /** 0..1: how deep into golden hour the clock is (peaks at sunset). */
+  function goldenHour(state) {
+    const d = Math.abs(state.timeOfDay - 0.75);
+    return clamp(1 - d / 0.09, 0, 1);
+  }
+
+  /** 0..1: how deep into night the clock is (peaks at midnight). */
+  function nightDepth(state) {
+    const day = daylight(state);
+    return clamp((0.45 - day) / 0.45, 0, 1);
+  }
+
   function drawGround(state, vis) {
     const ctx = context;
     // Base grass.
@@ -116,6 +133,22 @@ export function createRenderer(canvas) {
     ctx.fillRect(0, vis.y0, WORLD.harborX, vis.y1 - vis.y0);
     ctx.fillStyle = PALETTE.sand;
     ctx.fillRect(WORLD.harborX, vis.y0, 14, vis.y1 - vis.y0);
+    // The marina: wooden piers and two moored boats off the beach lot.
+    for (const pier of state.city.piers) {
+      if (pier.x < vis.x0 || pier.x > vis.x1) continue;
+      ctx.fillStyle = PALETTE.pier;
+      ctx.fillRect(pier.x, pier.y, pier.w, pier.h);
+      ctx.fillStyle = PALETTE.pierDark;
+      for (let y = pier.y + 12; y < pier.y + pier.h; y += 24) ctx.fillRect(pier.x, y, pier.w, 3);
+    }
+    ctx.fillStyle = '#eef1f5';
+    ctx.beginPath();
+    ctx.ellipse(2660, WORLD.oceanY + 120, 34, 10, 0.3, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.fillStyle = '#d94f3d';
+    ctx.beginPath();
+    ctx.ellipse(2970, WORLD.oceanY + 90, 28, 9, -0.2, 0, Math.PI * 2);
+    ctx.fill();
   }
 
   function drawRoads(state, vis) {
@@ -180,6 +213,16 @@ export function createRenderer(canvas) {
         ctx.fillRect(b.x + b.w * 0.2, b.y + b.h * 0.25, b.w * 0.24, b.h * 0.22);
         ctx.fillRect(b.x + b.w * 0.6, b.y + b.h * 0.55, b.w * 0.2, b.h * 0.18);
       }
+      // Lit windows after dark: a few warm squares per building.
+      if (day < 0.4) {
+        ctx.fillStyle = 'rgba(255, 210, 110, 0.85)';
+        const lit = Math.floor((b.w * b.h) / 2600);
+        for (let w = 0; w < lit; w += 1) {
+          const wx = b.x + 10 + ((w * 37) % Math.max(1, b.w - 22));
+          const wy = b.y + 10 + ((w * 53) % Math.max(1, b.h - 22));
+          ctx.fillRect(wx, wy, 8, 10);
+        }
+      }
       ctx.strokeStyle = 'rgba(0,0,0,0.25)';
       ctx.lineWidth = 2;
       ctx.strokeRect(b.x + 1, b.y + 1, b.w - 2, b.h - 2);
@@ -199,6 +242,24 @@ export function createRenderer(canvas) {
       ctx.beginPath();
       ctx.arc(t.x - t.r * 0.3, t.y - t.r * 0.3, t.r * 0.45, 0, Math.PI * 2);
       ctx.fill();
+    }
+  }
+
+  /** Small name tags over the story places, so the city reads as a place, not a grid. */
+  function drawPlaceLabels(state, vis) {
+    const ctx = context;
+    ctx.font = `bold 15px ${FONT}`;
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'alphabetic';
+    for (const key of ['club', 'docks', 'warehouse', 'chopShop', 'marina', 'hospital']) {
+      const place = PLACES[key];
+      if (place.x < vis.x0 || place.x > vis.x1 || place.y < vis.y0 || place.y > vis.y1) continue;
+      const w = ctx.measureText(place.label).width + 16;
+      ctx.fillStyle = 'rgba(10,16,28,0.7)';
+      rr(ctx, place.x - w / 2, place.y - 58, w, 22, 6);
+      ctx.fill();
+      ctx.fillStyle = '#f5f2ea';
+      ctx.fillText(place.label, place.x, place.y - 42);
     }
   }
 
@@ -245,33 +306,56 @@ export function createRenderer(canvas) {
       ctx.fillRect(-len / 2 - 2, -wid / 2 + 2, 5, wid - 4);
     }
     ctx.restore();
+    // Headlight cone at night, for the car the player is driving.
+    if (car === state.player.inCar && nightDepth(state) > 0.25) {
+      ctx.save();
+      ctx.translate(car.x, car.y);
+      ctx.rotate(car.angle);
+      ctx.fillStyle = PALETTE.headlight;
+      ctx.beginPath();
+      ctx.moveTo(24, -10);
+      ctx.lineTo(24, 10);
+      ctx.lineTo(190, 70);
+      ctx.lineTo(190, -70);
+      ctx.closePath();
+      ctx.fill();
+      ctx.restore();
+    }
   }
 
   function drawPedShape(ped) {
     const ctx = context;
+    const r = ped.size || 9;
     ctx.fillStyle = 'rgba(0,0,0,0.3)';
     ctx.beginPath();
-    ctx.arc(ped.x + 2, ped.y + 3, 9, 0, Math.PI * 2);
+    ctx.arc(ped.x + 2, ped.y + 3, r, 0, Math.PI * 2);
     ctx.fill();
     if (ped.state === 'down') {
       ctx.fillStyle = ped.color;
       ctx.beginPath();
-      ctx.ellipse(ped.x, ped.y, 13, 7, ped.angle, 0, Math.PI * 2);
+      ctx.ellipse(ped.x, ped.y, r + 4, r - 2, ped.angle, 0, Math.PI * 2);
       ctx.fill();
       return;
     }
     ctx.fillStyle = ped.color;
     ctx.beginPath();
-    ctx.arc(ped.x, ped.y, 9, 0, Math.PI * 2);
+    ctx.arc(ped.x, ped.y, r, 0, Math.PI * 2);
     ctx.fill();
     ctx.fillStyle = '#e8b98d';
     ctx.beginPath();
-    ctx.arc(ped.x, ped.y, 5, 0, Math.PI * 2);
+    ctx.arc(ped.x, ped.y, r * 0.55, 0, Math.PI * 2);
     ctx.fill();
+    if (ped.hat) {
+      ctx.fillStyle = '#2b2b2b';
+      ctx.beginPath();
+      ctx.arc(ped.x, ped.y - 1, r * 0.6, Math.PI, 0);
+      ctx.fill();
+      ctx.fillRect(ped.x - r * 0.6, ped.y - r * 0.35, r * 1.2, 2.5);
+    }
     if (ped.kind === 'cop') {
       ctx.fillStyle = '#16233d';
       ctx.beginPath();
-      ctx.arc(ped.x, ped.y - 1, 5.5, Math.PI, 0);
+      ctx.arc(ped.x, ped.y - 1, r * 0.6, Math.PI, 0);
       ctx.fill();
     }
     if (ped.kind === 'thug') {
@@ -280,6 +364,15 @@ export function createRenderer(canvas) {
       ctx.beginPath();
       ctx.moveTo(ped.x, ped.y);
       ctx.lineTo(ped.x + Math.cos(ped.angle) * 16, ped.y + Math.sin(ped.angle) * 16);
+      ctx.stroke();
+    }
+    // Joggers lean into their stride.
+    if (ped.pace === 'jog') {
+      ctx.strokeStyle = 'rgba(0,0,0,0.35)';
+      ctx.lineWidth = 2;
+      ctx.beginPath();
+      ctx.moveTo(ped.x - Math.cos(ped.angle) * r, ped.y - Math.sin(ped.angle) * r);
+      ctx.lineTo(ped.x - Math.cos(ped.angle) * (r + 7), ped.y - Math.sin(ped.angle) * (r + 7));
       ctx.stroke();
     }
   }
@@ -311,12 +404,14 @@ export function createRenderer(canvas) {
     ctx.beginPath();
     ctx.arc(player.x, player.y, 3, 0, Math.PI * 2);
     ctx.fill();
+    // Mara rides along on the getaway: a gold marker over the car is drawn by
+    // drawHud; on foot she is not shown, the mission text says she is with you.
   }
 
   function drawBeacon(state) {
     const ctx = context;
     const target = state.missionTarget;
-    if (!target || state.missionIndex >= 3) return;
+    if (!target || state.missionIndex >= 4) return;
     const pulse = 1 + Math.sin(state.time * 4) * 0.15;
     const bob = Math.sin(state.time * 3) * 6;
     ctx.fillStyle = 'rgba(242,201,76,0.12)';
@@ -370,15 +465,17 @@ export function createRenderer(canvas) {
     }
   }
 
+  /** The light, blended smoothly: night veil, then a golden-hour wash at dusk. */
   function drawLighting(state) {
     const ctx = context;
-    const day = daylight(state);
-    // Night falls: a cool blue veil. Golden hour: a warm wash.
-    if (day < 0.55) {
-      ctx.fillStyle = `rgba(8, 16, 44, ${(0.55 - day) * 0.55})`;
+    const night = nightDepth(state);
+    const gold = goldenHour(state);
+    if (night > 0) {
+      ctx.fillStyle = `rgba(8, 16, 44, ${(night * 0.5).toFixed(3)})`;
       ctx.fillRect(0, 0, VIEW.width, VIEW.height);
-    } else if (state.timeOfDay > 0.68 && state.timeOfDay < 0.82) {
-      ctx.fillStyle = 'rgba(255, 150, 60, 0.10)';
+    }
+    if (gold > 0) {
+      ctx.fillStyle = `rgba(255, 150, 60, ${(gold * 0.12).toFixed(3)})`;
       ctx.fillRect(0, 0, VIEW.width, VIEW.height);
     }
   }
@@ -445,7 +542,7 @@ export function createRenderer(canvas) {
     }
     // Mission target.
     const target = state.missionTarget;
-    if (target && state.missionIndex < 3) {
+    if (target && state.missionIndex < 4) {
       const pulse = 5 + Math.sin(state.time * 5) * 2;
       ctx.fillStyle = PALETTE.beacon;
       ctx.beginPath();
@@ -481,6 +578,26 @@ export function createRenderer(canvas) {
     text('SOLMAR BAY', mx, my - 12, 13, PALETTE.muted, 'left', 'bold ');
   }
 
+  /** The wanted-level heat bar: how hot the player is, 0..1, under the stars. */
+  function drawHeatBar(state) {
+    const ctx = context;
+    const heat = clamp(state.heat || 0, 0, 1);
+    const w = 176;
+    const x = VIEW.width - 24 - w;
+    const y = 80;
+    ctx.fillStyle = 'rgba(0,0,0,0.55)';
+    rr(ctx, x, y, w, 10, 5);
+    ctx.fill();
+    if (heat > 0.01) {
+      const color = heat < 0.4 ? PALETTE.heatCool : heat < 0.75 ? PALETTE.heatWarm : PALETTE.heatHot;
+      ctx.fillStyle = color;
+      rr(ctx, x + 2, y + 2, (w - 4) * heat, 6, 3);
+      ctx.fill();
+    }
+    const label = state.wanted === 0 ? 'HEAT · COLD' : heat > 0.75 ? 'HEAT · BURNING' : heat > 0.4 ? 'HEAT · WARM' : 'HEAT · COOL';
+    text(label, x + w, y + 24, 12, heat > 0.75 ? PALETTE.heatHot : PALETTE.muted, 'right', 'bold ');
+  }
+
   function drawHud(state, ui) {
     const ctx = context;
     const player = state.player;
@@ -507,13 +624,19 @@ export function createRenderer(canvas) {
     if (state.wanted > 0) {
       outlineText('WANTED', VIEW.width - 24, 72, 15, '#ff6b5e', 'right', 'bold ');
     }
+    drawHeatBar(state);
     // Mission objective, top centre.
-    const mission = state.missionIndex < 3 ? `MISSION ${state.missionIndex + 1}/3` : 'FREE ROAM';
+    const mission = state.missionIndex < 4 ? `MISSION ${state.missionIndex + 1}/4` : 'FREE ROAM';
     outlineText(mission, VIEW.width / 2, 36, 15, PALETTE.gold, 'center', 'bold ');
     outlineText(state.missionText, VIEW.width / 2, 62, 17, '#fff', 'center');
-    if (state.missionTarget && state.missionIndex < 3) {
+    if (state.missionTarget && state.missionIndex < 4) {
       const d = Math.round(Math.hypot(player.x - state.missionTarget.x, player.y - state.missionTarget.y));
       outlineText(`${state.missionTarget.label} · ${d}m`, VIEW.width / 2, 86, 14, PALETTE.muted, 'center');
+    }
+    // Getaway clock, big and red while it runs.
+    if (state.missionTimer > 0) {
+      const seconds = Math.max(0, Math.ceil(state.missionTimer));
+      outlineText(`${seconds}s`, VIEW.width / 2, 122, 30, seconds <= 10 ? PALETTE.red : PALETTE.gold, 'center', 'bold ');
     }
     // Speed and weapon, bottom right.
     if (player.inCar) {
@@ -529,9 +652,14 @@ export function createRenderer(canvas) {
         rr(ctx, VIEW.width - 212, VIEW.height - 28, 186 * (hpCar / 100), 6, 3);
         ctx.fill();
       }
+      if (state.maraRiding) {
+        outlineText('MARA IS RIDING WITH YOU', VIEW.width - 24, VIEW.height - 92, 15, PALETTE.gold, 'right', 'bold ');
+      }
     } else {
       outlineText(player.armed ? `PISTOL · ${player.ammo}` : 'FISTS', VIEW.width - 24, VIEW.height - 40, 22, '#fff', 'right', 'bold ');
     }
+    // District, bottom left above the minimap.
+    text(`YOU ARE IN ${state.district || districtAt(player.x, player.y)}`, MINIMAP.x, MINIMAP.y - 32, 14, PALETTE.muted, 'left', 'bold ');
     // Toast, centre.
     if (state.toastTimer > 0) {
       outlineText(state.toast, VIEW.width / 2, 150, 24, PALETTE.gold, 'center', 'bold ');
@@ -543,7 +671,7 @@ export function createRenderer(canvas) {
       outlineText(state.missionBanner, VIEW.width / 2, 300, 34, PALETTE.gold, 'center', 'bold ');
     }
     // Controls hint.
-    text('WASD move · E enter car · Click shoot · Space punch · Shift run · P pause', VIEW.width / 2, VIEW.height - 12, 13, 'rgba(255,255,255,0.6)', 'center');
+    text('WASD move · E enter car · H horn · Click shoot · Space punch · Shift run · P pause · M mute', VIEW.width / 2, VIEW.height - 12, 13, 'rgba(255,255,255,0.6)', 'center');
   }
 
   function drawPanel(title, lines, prompt, accent) {
@@ -567,6 +695,25 @@ export function createRenderer(canvas) {
     text(prompt, VIEW.width / 2, y + height - 30, 21, PALETTE.text, 'center', 'bold ');
   }
 
+  /** The pause menu doubles as the "How to play" recap: controls, the goal,
+   * and where the story stands, so a returning player never has to guess. */
+  function drawPausePanel(state, ui) {
+    const missionLine = state.missionIndex < 4
+      ? `Mission ${state.missionIndex + 1}/4 — ${MISSIONS[state.missionIndex].name}`
+      : 'All missions complete — free roam.';
+    drawPanel('PAUSED · HOW TO PLAY', [
+      'WASD / arrows — move on foot, drive in a car',
+      'E — enter / steal a car (or get out)      H — horn',
+      'Mouse — aim, click — shoot      Space — punch',
+      'Shift — run      P — pause      M — mute sound',
+      'Follow the yellow beacon. Missions pay cash.',
+      'Stars are your wanted level; the HEAT bar shows',
+      'how close the cops are. Lay low and it cools off.',
+      missionLine,
+      `Cash $${state.player.cash.toLocaleString('en-US')} · best $${(ui.best || 0).toLocaleString('en-US')}`,
+    ], 'P — resume', '#fff');
+  }
+
   function drawTitle(state, ui) {
     // Dim the city a little so the title reads.
     context.fillStyle = 'rgba(6,10,20,0.45)';
@@ -576,10 +723,10 @@ export function createRenderer(canvas) {
     text('Rico Vega is out of prison and back in Solmar Bay. Mara Solano has work for him —', VIEW.width / 2, 268, 19, PALETTE.muted, 'center');
     text('packages to move, cars to steal, scores to settle. The city is yours. The law is not.', VIEW.width / 2, 294, 19, PALETTE.muted, 'center');
     text('WASD / arrows — move & drive      E — enter / steal a car      Mouse — aim, click — shoot', VIEW.width / 2, 352, 18, PALETTE.text, 'center');
-    text('Space — punch      Shift — run      P — pause      Missions pay cash. Cops cost it.', VIEW.width / 2, 380, 18, PALETTE.text, 'center');
-    text('3 missions · traffic & pedestrians · wanted level & police · save keeps your cash', VIEW.width / 2, 424, 17, PALETTE.muted, 'center');
+    text('Space — punch      Shift — run      H — horn      P — pause      M — mute', VIEW.width / 2, 380, 18, PALETTE.text, 'center');
+    text('4 missions · traffic & pedestrians · wanted level & police · save keeps your cash', VIEW.width / 2, 424, 17, PALETTE.muted, 'center');
     const prompt = ui.hasSave
-      ? `ENTER — start story      C — continue ($${ui.saveCash}, mission ${ui.saveMission}/3)`
+      ? `ENTER — start story      C — continue ($${ui.saveCash}, mission ${ui.saveMission}/4)`
       : 'ENTER or click — start story';
     outlineText(prompt, VIEW.width / 2, 500, 24, PALETTE.gold, 'center', 'bold ');
     if (ui.best > 0) text(`Best cash: $${ui.best.toLocaleString('en-US')}`, VIEW.width / 2, 544, 17, PALETTE.muted, 'center');
@@ -606,6 +753,7 @@ export function createRenderer(canvas) {
     drawGround(state, vis);
     drawRoads(state, vis);
     drawBuildings(state, vis);
+    drawPlaceLabels(state, vis);
     drawPickups(state);
     drawBeacon(state);
     // Cars and pedestrians, lowest y first so nearer things overlap.
@@ -626,7 +774,7 @@ export function createRenderer(canvas) {
     drawHud(state, ui);
     drawMinimap(state);
     if (screen === SCREEN_PAUSED) {
-      drawPanel('PAUSED', ['The city waits for you.', 'WASD move · E car · Click shoot · Space punch'], 'P — resume', '#fff');
+      drawPausePanel(state, ui);
     } else if (screen === SCREEN_WASTED) {
       drawPanel('WASTED', [`You lost $${ui.lost}.`, 'Mara is not impressed.'], 'ENTER — wake up at Solmar General', PALETTE.red);
     } else if (screen === SCREEN_BUSTED) {

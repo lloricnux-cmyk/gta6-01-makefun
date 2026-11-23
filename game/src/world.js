@@ -1,13 +1,17 @@
 // The game's rules and state, with no drawing and no browser in it: the player on
-// foot and in cars, traffic, pedestrians, police and the wanted level, the three
+// foot and in cars, traffic, pedestrians, police and the wanted level, the four
 // missions and the story, combat, particles, the camera and the clock. step()
 // advances one fixed step and returns what happened as bit flags, so the caller can
 // react (sounds, announcements) without the world knowing about screens or audio.
+//
+// Traffic deadlock, fixed here: a driver that waits behind a stopped car first
+// tries to overtake it (pull into the other lane and go around), and if it is
+// still stuck it forces a turn at the next crossing instead of queuing forever.
 // Nothing here allocates after createWorld returns, apart from the small particle
 // pool churn, which the cap keeps bounded.
-import { CAR, MISSIONS, PALETTE, PEDS, PLAYER, POLICE, TRAFFIC, VIEW, WORLD } from './config.js';
-import { angleDiff, clamp, distance, randomInt, randomPick } from './random.js';
-import { PLACES, buildCity, buildingAt, collideBuildings, nearestRoad, onRoad } from './city.js';
+import { CAR, DAY_LENGTH, LAST_STAND, MISSIONS, PALETTE, PEDS, PLAYER, POLICE, TRAFFIC, VIEW, WORLD } from './config.js';
+import { angleDiff, clamp, distance, randomInt, randomPick, shuffle } from './random.js';
+import { PLACES, buildCity, buildingAt, collideBuildings, districtAt, nearestRoad, onRoad } from './city.js';
 
 export const EVENT_SHOT = 1;
 export const EVENT_PUNCH = 2;
@@ -19,6 +23,7 @@ export const EVENT_EXPLOSION = 64;
 export const EVENT_CRIME = 128;
 export const EVENT_ENTER_CAR = 256;
 export const EVENT_HIT = 512;
+export const EVENT_HORN = 1024;
 
 const MAX_PARTICLES = 220;
 const MAX_POLICE_CARS = 5;
@@ -35,7 +40,16 @@ function makeCar(kind, x, y, angle, color) {
     driverFled: kind !== 'traffic',
     ramTimer: 0,
     hitTimer: 0,
-    smokeTimer: 0, dead: false,
+    smokeTimer: 0,
+    // Traffic flow: how long this driver has waited behind a stopped car, and
+    // whether it is currently overtaking (see updateTrafficCar).
+    waitTimer: 0,
+    overtake: false,
+    overtakeTimer: 0,
+    overtakeFrom: 0,
+    forceTurn: false,
+    hornBoost: 0,
+    dead: false,
   };
 }
 
@@ -45,6 +59,8 @@ function makePed(kind, x, y, color) {
     health: kind === 'thug' ? 60 : 30,
     axis: 'y', dir: 1, line: x, along: y,
     state: 'walk', stateTimer: 0, fireTimer: 0, punchTimer: 0,
+    // Variety: joggers move faster, strollers dawdle, some wear hats.
+    pace: 'walk', size: 9, hat: false,
     dead: false,
   };
 }
@@ -65,7 +81,14 @@ export function createWorld(random) {
     toastTimer: 0,
     wanted: 0,
     crimeTimer: 0,
+    // How hot the player is right now, 0..1: stars plus how close the nearest
+    // police car is. The HUD draws it as a heat bar under the stars.
+    heat: 0,
     thugsLeft: 0,
+    // Mission 4's getaway clock; 0 means no clock is running.
+    missionTimer: 0,
+    maraRiding: false,
+    district: 'Downtown',
     elapsed: 0,
     carsDriven: 0,
     pedsHit: 0,
@@ -145,6 +168,7 @@ export function createWorld(random) {
     car.axis = axis;
     car.dir = dir;
     car.line = line;
+    car.lane = dir === 1 ? 16 : -16;
     car.speed = TRAFFIC.minSpeed + random() * (TRAFFIC.maxSpeed - TRAFFIC.minSpeed);
     return car;
   }
@@ -163,6 +187,7 @@ export function createWorld(random) {
     car.axis = axis;
     car.dir = dir;
     car.line = line;
+    car.lane = dir === 1 ? 26 : -26;
     return car;
   }
 
@@ -182,7 +207,20 @@ export function createWorld(random) {
     ped.axis = axis;
     ped.dir = dir;
     ped.line = line;
-    ped.speed = PEDS.minSpeed + random() * (PEDS.maxSpeed - PEDS.minSpeed);
+    // One in eight pedestrians is a jogger, one in five a stroller; the rest
+    // walk. Size and hats vary too, so the crowd does not read as clones.
+    const roll = random();
+    if (roll < 0.125) {
+      ped.pace = 'jog';
+      ped.speed = PEDS.jogSpeed * (0.9 + random() * 0.2);
+    } else if (roll < 0.325) {
+      ped.pace = 'stroll';
+      ped.speed = PEDS.minSpeed * 0.7;
+    } else {
+      ped.speed = PEDS.minSpeed + random() * (PEDS.maxSpeed - PEDS.minSpeed);
+    }
+    ped.size = 8 + random() * 5;
+    ped.hat = random() < 0.22;
     return ped;
   }
 
@@ -203,20 +241,36 @@ export function createWorld(random) {
     return null;
   }
 
-  function spawnThugs() {
-    const spots = [
-      { x: PLACES.warehouse.x - 60, y: PLACES.warehouse.y - 40 },
-      { x: PLACES.warehouse.x + 40, y: PLACES.warehouse.y - 70 },
-      { x: PLACES.warehouse.x - 30, y: PLACES.warehouse.y + 60 },
-      { x: PLACES.warehouse.x + 80, y: PLACES.warehouse.y + 30 },
-      { x: PLACES.warehouse.x, y: PLACES.warehouse.y - 110 },
-    ];
-    for (const spot of spots) {
-      const thug = makePed('thug', spot.x, spot.y, PALETTE.thug);
+  /** Spawn armed thugs around a point: the warehouse crew and the club hit. */
+  function spawnThugsAt(cx, cy, spots) {
+    const chosen = shuffle(random, spots);
+    for (const spot of chosen) {
+      const thug = makePed('thug', cx + spot.x, cy + spot.y, PALETTE.thug);
       thug.state = 'guard';
       state.peds.push(thug);
     }
     state.thugsLeft = spots.length;
+  }
+
+  function spawnWarehouseThugs() {
+    spawnThugsAt(PLACES.warehouse.x, PLACES.warehouse.y, [
+      { x: -60, y: -40 },
+      { x: 40, y: -70 },
+      { x: -30, y: 60 },
+      { x: 80, y: 30 },
+      { x: 0, y: -110 },
+    ]);
+  }
+
+  function spawnClubThugs() {
+    spawnThugsAt(PLACES.club.x, PLACES.club.y, [
+      { x: -140, y: -60 },
+      { x: 150, y: -40 },
+      { x: -120, y: 120 },
+      { x: 160, y: 110 },
+      { x: -40, y: -170 },
+      { x: 60, y: 170 },
+    ]);
   }
 
   function reset() {
@@ -243,7 +297,11 @@ export function createWorld(random) {
     state.toastTimer = 0;
     state.wanted = 0;
     state.crimeTimer = 0;
+    state.heat = 0;
     state.thugsLeft = 0;
+    state.missionTimer = 0;
+    state.maraRiding = false;
+    state.district = 'Downtown';
     state.elapsed = 0;
     state.cars = [];
     state.peds = [];
@@ -269,8 +327,17 @@ export function createWorld(random) {
     comet.maxSpeed = CAR.sportsMaxSpeed;
     comet.axis = 'y';
     comet.line = PLACES.beachLot.x;
+    comet.lane = 16;
     state.cars.push(comet);
     state.comet = comet;
+    // A few pickups to find while exploring: health at the hospital, ammo at
+    // the docks and the warehouse, cash tucked into the park.
+    state.pickups.push(
+      { x: PLACES.hospital.x, y: PLACES.hospital.y + 90, kind: 'health', amount: 0, active: true },
+      { x: PLACES.docks.x + 60, y: PLACES.docks.y + 40, kind: 'ammo', amount: 0, active: true },
+      { x: PLACES.warehouse.x + 120, y: PLACES.warehouse.y, kind: 'ammo', amount: 0, active: true },
+      { x: PLACES.park.x, y: PLACES.park.y + 60, kind: 'cash', amount: 0, active: true },
+    );
   }
 
   function missionComplete() {
@@ -281,6 +348,8 @@ export function createWorld(random) {
     showBanner(`MISSION PASSED  ·  +$${mission.reward}`, 3.2);
     state.missionIndex += 1;
     state.missionStep = 0;
+    state.missionTimer = 0;
+    state.maraRiding = false;
     if (state.missionIndex === 1) {
       player.armed = true;
       player.ammo = PLAYER.startAmmo;
@@ -290,6 +359,10 @@ export function createWorld(random) {
     } else if (state.missionIndex === 2) {
       setMissionText(MISSIONS[2].brief);
       setMissionTarget(PLACES.warehouse.x, PLACES.warehouse.y, PLACES.warehouse.label);
+    } else if (state.missionIndex === 3) {
+      setMissionText(MISSIONS[3].brief);
+      setMissionTarget(PLACES.club.x, PLACES.club.y, PLACES.club.label);
+      showToast('Los Diablos are coming for the club. Get there.', 4);
     } else {
       setMissionText('Solmar Bay is yours. Free roam — earn cash, dodge the law, live large.');
       setMissionTarget(PLACES.club.x, PLACES.club.y, PLACES.club.label);
@@ -327,6 +400,9 @@ export function createWorld(random) {
         // Forgiving: the Comet is re-parked at the beach lot if it was destroyed.
         const comet = makeCar('sports', PLACES.beachLot.x, PLACES.beachLot.y, Math.PI / 2, PALETTE.sports);
         comet.maxSpeed = CAR.sportsMaxSpeed;
+        comet.axis = 'y';
+        comet.line = PLACES.beachLot.x;
+        comet.lane = 16;
         state.cars.push(comet);
         state.comet = comet;
         state.missionStep = 0;
@@ -337,7 +413,7 @@ export function createWorld(random) {
       if (state.missionStep === 0) {
         if (distance(px, py, PLACES.warehouse.x, PLACES.warehouse.y) < 240) {
           state.missionStep = 1;
-          spawnThugs();
+          spawnWarehouseThugs();
           setMissionText(`Clear the warehouse — ${state.thugsLeft} Los Diablos thugs left.`);
           showToast('THEY ARE ARMED. GOOD LUCK.', 3);
         }
@@ -345,12 +421,12 @@ export function createWorld(random) {
         setMissionText(`Clear the warehouse — ${state.thugsLeft} Los Diablos thugs left.`);
         if (state.thugsLeft <= 0) {
           state.missionStep = 2;
-          state.pickups.push({ x: PLACES.warehouse.x, y: PLACES.warehouse.y, kind: 'cash', amount: 0, active: true });
+          state.pickups.push({ x: PLACES.warehouse.x, y: PLACES.warehouse.y, kind: 'cash', amount: 0, active: true, missionCash: true });
           setMissionText('Warehouse clear. Grab the cash, then get back to Mara.');
           setMissionTarget(PLACES.warehouse.x, PLACES.warehouse.y, PLACES.warehouse.label);
         }
       } else if (state.missionStep === 2) {
-        const cash = state.pickups.find((p) => p.active && p.kind === 'cash');
+        const cash = state.pickups.find((p) => p.active && p.missionCash);
         if (!cash) {
           state.missionStep = 3;
           setMissionText('Cash in hand. Get back to Mara at the Starfish Club.');
@@ -358,6 +434,41 @@ export function createWorld(random) {
         }
       } else if (state.missionStep === 3) {
         if (distance(px, py, PLACES.club.x, PLACES.club.y) < 80) missionComplete();
+      }
+    } else if (state.missionIndex === 3) {
+      // M4 · Last Stand: reach the club, hold it against a wave of thugs, then
+      // drive Mara to the marina before the getaway clock runs out.
+      if (state.missionStep === 0) {
+        if (distance(px, py, PLACES.club.x, PLACES.club.y) < LAST_STAND.triggerRadius) {
+          state.missionStep = 1;
+          spawnClubThugs();
+          setMissionText(`Hold the Starfish — ${state.thugsLeft} Los Diablos thugs left.`);
+          showToast('THEY ARE HERE. HOLD THE CLUB.', 3);
+        }
+      } else if (state.missionStep === 1) {
+        setMissionText(`Hold the Starfish — ${state.thugsLeft} Los Diablos thugs left.`);
+        if (state.thugsLeft <= 0) {
+          state.missionStep = 2;
+          state.maraRiding = true;
+          state.missionTimer = LAST_STAND.getawaySeconds;
+          setMissionText(`Mara is with you. Get to The Marina — ${Math.ceil(state.missionTimer)}s!`);
+          setMissionTarget(PLACES.marina.x, PLACES.marina.y, PLACES.marina.label);
+          showToast('MARA IS IN. DRIVE!', 3);
+        }
+      } else if (state.missionStep === 2) {
+        state.missionTimer -= dt;
+        setMissionText(`Mara is with you. Get to The Marina — ${Math.max(0, Math.ceil(state.missionTimer))}s!`);
+        if (distance(px, py, PLACES.marina.x, PLACES.marina.y) < 90) {
+          missionComplete();
+        } else if (state.missionTimer <= 0) {
+          // Too slow: the crew regroups and hits the club again.
+          state.missionStep = 0;
+          state.maraRiding = false;
+          state.missionTimer = 0;
+          setMissionText(MISSIONS[3].brief);
+          setMissionTarget(PLACES.club.x, PLACES.club.y, PLACES.club.label);
+          showToast('TOO SLOW — THEY ARE COMING BACK', 3);
+        }
       }
     }
   }
@@ -489,6 +600,32 @@ export function createWorld(random) {
     return EVENT_EXPLOSION;
   }
 
+  /** The horn: traffic ahead of the player's car speeds up and clears a lane,
+   * nearby pedestrians scatter. Returns EVENT_HORN for the sound. */
+  function honk() {
+    const car = player.inCar;
+    if (!car) return 0;
+    const fx = Math.cos(car.angle);
+    const fy = Math.sin(car.angle);
+    for (const other of state.cars) {
+      if (other === car || other.dead || other.kind !== 'traffic') continue;
+      const dx = other.x - car.x;
+      const dy = other.y - car.y;
+      const along = dx * fx + dy * fy;
+      const perp = Math.abs(-dx * fy + dy * fx);
+      if (along > 0 && along < 260 && perp < 60) other.hornBoost = 1.5;
+    }
+    for (const ped of state.peds) {
+      if (ped.dead) continue;
+      if (distance(ped.x, ped.y, car.x, car.y) < 150) {
+        ped.state = 'flee';
+        ped.stateTimer = 2;
+        ped.angle = Math.atan2(ped.y - car.y, ped.x - car.x);
+      }
+    }
+    return EVENT_HORN;
+  }
+
   function updatePlayer(dt, input) {
     if (player.punchTimer > 0) player.punchTimer -= dt;
     if (player.fireTimer > 0) player.fireTimer -= dt;
@@ -547,6 +684,7 @@ export function createWorld(random) {
       player.y = car.y;
       player.angle = car.angle;
       if (input.enterPressed) exitCar();
+      if (input.hornPressed) return honk();
       return 0;
     }
 
@@ -572,7 +710,6 @@ export function createWorld(random) {
     }
     if (input.punchPressed && player.punchTimer <= 0) {
       player.punchTimer = 0.45;
-      let hitSomething = false;
       for (const ped of state.peds) {
         if (ped.dead || ped.state === 'down') continue;
         const d = distance(player.x, player.y, ped.x, ped.y);
@@ -590,7 +727,6 @@ export function createWorld(random) {
               ped.state = 'flee';
               ped.stateTimer = 3;
             }
-            hitSomething = true;
           }
         }
       }
@@ -604,28 +740,72 @@ export function createWorld(random) {
     return 0;
   }
 
+  /**
+   * One traffic car. The car ahead is found by real position, not by road line,
+   * so a car in the other lane never blocks this one — and a driver that has
+   * waited too long pulls out and overtakes instead of joining a queue.
+   */
   function updateTrafficCar(dt, car) {
-    if (car.kind !== 'traffic') return;
-    // Slow for a car ahead in the same lane.
-    let targetSpeed = TRAFFIC.maxSpeed;
+    if (car.hornBoost > 0) car.hornBoost -= dt;
+    const fx = car.axis === 'y' ? 0 : car.dir;
+    const fy = car.axis === 'y' ? car.dir : 0;
+    let blocked = false;
+    let targetSpeed = TRAFFIC.maxSpeed * (car.hornBoost > 0 ? 1.25 : 1);
     for (const other of state.cars) {
       if (other === car || other.dead) continue;
-      if (other.axis !== car.axis || other.line !== car.line || other.dir !== car.dir) continue;
-      const ahead = car.axis === 'y' ? (other.y - car.y) * car.dir : (other.x - car.x) * car.dir;
-      if (ahead > 0 && ahead < 90) {
+      const dx = other.x - car.x;
+      const dy = other.y - car.y;
+      const along = dx * fx + dy * fy;
+      if (along <= 0) continue;
+      const perp = Math.abs(-dx * fy + dy * fx);
+      if (perp > 30) continue;
+      if (along < TRAFFIC.stopGap) {
+        blocked = true;
         targetSpeed = 0;
         break;
       }
-      if (ahead > 0 && ahead < 170) targetSpeed = Math.min(targetSpeed, 70);
+      if (along < TRAFFIC.lookAhead) targetSpeed = Math.min(targetSpeed, 70);
     }
+    // Waiting: count it, then act on it.
+    if (blocked && car.speed < 8) {
+      car.waitTimer += dt;
+    } else {
+      car.waitTimer = Math.max(0, car.waitTimer - dt * 2);
+    }
+    if (!car.overtake && car.waitTimer > TRAFFIC.overtakeAfter) {
+      car.overtake = true;
+      car.overtakeTimer = 0;
+      // Where the overtake started along the road: the car stays in the far
+      // lane until it is well past the blockage, not just until the car ahead
+      // leaves its narrow look-ahead band (which it does the moment it pulls
+      // out — ending the overtake while still behind the blockage).
+      car.overtakeFrom = car.axis === 'y' ? car.y : car.x;
+    }
+    if (car.overtake) {
+      car.overtakeTimer += dt;
+      // Overtaking ignores the car ahead and aims for the far lane.
+      targetSpeed = TRAFFIC.maxSpeed;
+      const alongNow = car.axis === 'y' ? car.y : car.x;
+      const passed = Math.abs(alongNow - car.overtakeFrom) > 220;
+      if (car.overtakeTimer > 5 || passed) {
+        car.overtake = false;
+        car.waitTimer = 0;
+      }
+    }
+    if (car.waitTimer > TRAFFIC.impatientAfter) car.forceTurn = true;
     car.speed += clamp(targetSpeed - car.speed, -220 * dt, 240 * dt);
+    // Ease the lane offset toward its target: the home lane, or the far lane
+    // while overtaking. The snap in the old code is what made queues look rigid.
+    const homeLane = car.dir === 1 ? 16 : -16;
+    const targetLane = car.overtake ? -homeLane : homeLane;
+    car.lane += clamp(targetLane - car.lane, -90 * dt, 90 * dt);
     // Advance along the road.
     const along = car.axis === 'y' ? car.y : car.x;
     const crossRoads = car.axis === 'y' ? WORLD.roadsY : WORLD.roadsX;
     let turned = false;
     for (const cross of crossRoads) {
       const d = (cross - along) * car.dir;
-      if (d > 0 && d < Math.abs(car.speed) * dt + 6 && random() < TRAFFIC.turnChance) {
+      if (d > 0 && d < Math.abs(car.speed) * dt + 6 && (car.forceTurn || random() < TRAFFIC.turnChance)) {
         const newDir = random() < 0.5 ? 1 : -1;
         const newAxis = car.axis === 'y' ? 'x' : 'y';
         if (newAxis === 'x') {
@@ -641,6 +821,9 @@ export function createWorld(random) {
           car.dir = newDir;
           car.angle = newDir === 1 ? Math.PI / 2 : -Math.PI / 2;
         }
+        car.lane = newDir === 1 ? 16 : -16;
+        car.forceTurn = false;
+        car.waitTimer = 0;
         turned = true;
         break;
       }
@@ -648,14 +831,14 @@ export function createWorld(random) {
     if (!turned) {
       if (car.axis === 'y') {
         car.y += car.dir * car.speed * dt;
-        car.x = car.line + (car.dir === 1 ? 16 : -16);
-        if (car.y < 60) { car.y = 60; car.dir = 1; car.angle = Math.PI / 2; }
-        if (car.y > WORLD.beachY - 100) { car.y = WORLD.beachY - 100; car.dir = -1; car.angle = -Math.PI / 2; }
+        car.x = car.line + car.lane;
+        if (car.y < 60) { car.y = 60; car.dir = 1; car.angle = Math.PI / 2; car.lane = 16; }
+        if (car.y > WORLD.beachY - 100) { car.y = WORLD.beachY - 100; car.dir = -1; car.angle = -Math.PI / 2; car.lane = -16; }
       } else {
         car.x += car.dir * car.speed * dt;
-        car.y = car.line + (car.dir === 1 ? 16 : -16);
-        if (car.x < 60) { car.x = 60; car.dir = 1; car.angle = 0; }
-        if (car.x > WORLD.width - 60) { car.x = WORLD.width - 60; car.dir = -1; car.angle = Math.PI; }
+        car.y = car.line + car.lane;
+        if (car.x < 60) { car.x = 60; car.dir = 1; car.angle = 0; car.lane = 16; }
+        if (car.x > WORLD.width - 60) { car.x = WORLD.width - 60; car.dir = -1; car.angle = Math.PI; car.lane = -16; }
       }
     }
   }
@@ -710,6 +893,12 @@ export function createWorld(random) {
     }
   }
 
+  /** Is a thug fight in progress right now (warehouse or club defence)? */
+  function combatActive() {
+    return (state.missionIndex === 2 && state.missionStep === 1)
+      || (state.missionIndex === 3 && state.missionStep === 1);
+  }
+
   function updatePed(dt, ped) {
     if (ped.dead) return;
     if (ped.state === 'down') {
@@ -720,7 +909,13 @@ export function createWorld(random) {
       }
       return;
     }
-    if (ped.kind === 'thug' && state.missionIndex === 2 && state.missionStep === 1) {
+    if (ped.state === 'idle') {
+      // A stroller stopped to look around; stand still until the timer ends.
+      ped.stateTimer -= dt;
+      if (ped.stateTimer <= 0) ped.state = 'walk';
+      return;
+    }
+    if (ped.kind === 'thug' && combatActive()) {
       const d = distance(ped.x, ped.y, player.x, player.y);
       if (d < 420) {
         ped.angle = Math.atan2(player.y - ped.y, player.x - ped.x);
@@ -794,7 +989,12 @@ export function createWorld(random) {
       return;
     }
     // Ordinary walking: along a sidewalk, turning at intersections.
+    // Joggers keep their pace; strollers dawdle and stop to look around.
     let speed = ped.speed;
+    if (ped.pace === 'stroll' && random() < 0.002) {
+      ped.stateTimer = 1.5;
+      ped.state = 'idle';
+    }
     const crossRoads = ped.axis === 'y' ? WORLD.roadsY : WORLD.roadsX;
     const along = ped.axis === 'y' ? ped.y : ped.x;
     for (const cross of crossRoads) {
@@ -859,7 +1059,6 @@ export function createWorld(random) {
             pc.hitTimer = 0.5;
             pc.health -= impact * 0.008;
             car.health -= impact * 0.008;
-
             burst(pc.x, pc.y, '#ffd23d', 5, 130, 0.35, 3);
             pc.speed *= 0.7;
           }
@@ -939,8 +1138,11 @@ export function createWorld(random) {
       if (distance(player.x, player.y, pickup.x, pickup.y) < 44) {
         pickup.active = false;
         pendingEvents |= EVENT_PICKUP;
-        if (pickup.kind === 'cash') showToast('CASH GRABBED', 2);
-        else if (pickup.kind === 'ammo') {
+        if (pickup.kind === 'cash') {
+          player.cash += 100;
+          state.cash = player.cash;
+          showToast('STASH FOUND — +$100', 2);
+        } else if (pickup.kind === 'ammo') {
           player.ammo += 30;
           showToast('+30 AMMO', 2);
         } else if (pickup.kind === 'health') {
@@ -950,6 +1152,18 @@ export function createWorld(random) {
       }
     }
     state.pickups = state.pickups.filter((p) => p.active);
+  }
+
+  /** How hot the player is: stars plus the nearest police car's distance. */
+  function updateHeat() {
+    let nearest = Infinity;
+    for (const car of state.cars) {
+      if (car.kind !== 'police') continue;
+      nearest = Math.min(nearest, distance(car.x, car.y, player.x, player.y));
+    }
+    const proximity = nearest === Infinity ? 0 : clamp(1 - nearest / POLICE.heatRange, 0, 1);
+    const target = state.wanted === 0 ? 0 : clamp(state.wanted / 5 * 0.7 + proximity * 0.5, 0, 1);
+    state.heat += (target - state.heat) * 0.06;
   }
 
   function updateCamera(dt) {
@@ -969,7 +1183,7 @@ export function createWorld(random) {
     let events = 0;
     state.elapsed += dt;
     state.time += dt;
-    state.timeOfDay = (state.timeOfDay + dt / 360) % 1;
+    state.timeOfDay = (state.timeOfDay + dt / DAY_LENGTH) % 1;
     if (state.bannerTimer > 0) state.bannerTimer -= dt;
     if (state.toastTimer > 0) state.toastTimer -= dt;
 
@@ -1000,6 +1214,8 @@ export function createWorld(random) {
     events |= updatePeds(dt);
     updatePickups(dt);
     updateParticles(dt);
+    updateHeat();
+    state.district = districtAt(player.x, player.y);
     updateCamera(dt);
     return events;
   }
@@ -1012,6 +1228,9 @@ export function createWorld(random) {
     player.bustTimer = 0;
     state.wanted = 0;
     state.crimeTimer = 0;
+    state.heat = 0;
+    state.missionTimer = 0;
+    state.maraRiding = false;
     if (player.inCar) {
       player.inCar.kind = 'parked';
       player.inCar = null;
@@ -1036,6 +1255,7 @@ export function createWorld(random) {
     showBanner,
     spawnPoliceCar,
     nearestCar,
+    honk,
     // Helpers the screenshot scenes use to stage a lively frame.
     debug: {
       placePlayerInCar(car, x, y, angle) {
@@ -1068,6 +1288,9 @@ export function createWorld(random) {
         } else if (index === 2) {
           setMissionText(MISSIONS[2].brief);
           setMissionTarget(PLACES.warehouse.x, PLACES.warehouse.y, PLACES.warehouse.label);
+        } else if (index === 3) {
+          setMissionText(MISSIONS[3].brief);
+          setMissionTarget(PLACES.club.x, PLACES.club.y, PLACES.club.label);
         }
       },
       spawnPolice(n) {
@@ -1075,6 +1298,9 @@ export function createWorld(random) {
           const car = spawnPoliceCar();
           if (car) state.cars.push(car);
         }
+      },
+      spawnClubThugs() {
+        spawnClubThugs();
       },
     },
   };

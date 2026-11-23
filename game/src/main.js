@@ -2,21 +2,24 @@
 // 1/60 s steps (several in a slow frame, none in a fast one), and the renderer
 // paints what is there. The game moves between five screens: title, play, paused,
 // wasted and busted. Cash and mission progress save to localStorage, so a visit
-// can continue where the last one ended.
+// can continue where the last one ended. One-shot actions (horn, mute, pause)
+// are taken from the input queue once per frame and never replayed.
 //
 // ?seed=N fixes the city and the traffic. ?shot=start|play|chase|mission (with
 // &seed=N) stages that scene instead of running the loop, paints it twice and
 // sets window.__shotReady for a screenshot.
 import { BEST_KEY, SAVE_KEY, STEP, VIEW } from './config.js';
 import { createRandom } from './random.js';
-import { createWorld, EVENT_BUSTED, EVENT_ENTER_CAR, EVENT_EXPLOSION, EVENT_MISSION, EVENT_PICKUP, EVENT_PUNCH, EVENT_SHOT, EVENT_WASTED } from './world.js';
-import { ACTION_CONFIRM, ACTION_CONTINUE, ACTION_ENTER, ACTION_PAUSE, createInput } from './input.js';
+import { createWorld, EVENT_BUSTED, EVENT_ENTER_CAR, EVENT_EXPLOSION, EVENT_HORN, EVENT_MISSION, EVENT_PICKUP, EVENT_PUNCH, EVENT_SHOT, EVENT_WASTED } from './world.js';
+import { ACTION_CONFIRM, ACTION_CONTINUE, ACTION_ENTER, ACTION_HORN, ACTION_MUTE, ACTION_PAUSE, createInput } from './input.js';
 import { createAudio } from './audio.js';
 import { createRenderer, SCREEN_BUSTED, SCREEN_PAUSED, SCREEN_PLAY, SCREEN_TITLE, SCREEN_WASTED } from './render.js';
 import { stageShot } from './shots.js';
 
 /** The longest frame the loop catches up on; a longer stall (a hidden tab) is dropped, not replayed. */
 const MAX_FRAME = 0.25;
+/** The story has four missions; a save from an older build clamps to them. */
+const MISSION_COUNT = 4;
 
 const params = new URLSearchParams(window.location.search);
 const shot = params.get('shot');
@@ -66,14 +69,14 @@ function applySave(save) {
   const player = world.state.player;
   player.cash = save.cash;
   world.state.cash = save.cash;
-  const mission = Math.max(0, Math.min(3, save.mission));
+  const mission = Math.max(0, Math.min(MISSION_COUNT, save.mission));
   if (mission >= 1) {
     player.armed = true;
     player.ammo = 60;
   }
-  if (mission >= 1 && mission < 3) world.debug.setMission(mission, 0);
-  else if (mission >= 3) {
-    world.state.missionIndex = 3;
+  if (mission >= 1 && mission < MISSION_COUNT) world.debug.setMission(mission, 0);
+  else if (mission >= MISSION_COUNT) {
+    world.state.missionIndex = MISSION_COUNT;
     world.state.missionText = 'Solmar Bay is yours. Free roam — earn cash, dodge the law, live large.';
   }
 }
@@ -100,6 +103,8 @@ function runGame() {
   let accumulator = 0;
   let last = performance.now();
   let missionSeen = world.state.missionIndex;
+  let wantedSeen = world.state.wanted;
+  let muted = false;
 
   function ui() {
     return {
@@ -120,6 +125,7 @@ function runGame() {
     world.reset();
     if (useSave && save) applySave(save);
     missionSeen = world.state.missionIndex;
+    wantedSeen = world.state.wanted;
     accumulator = 0;
     screen = SCREEN_PLAY;
     announce('Playing Solmar Bay. Follow the yellow marker.');
@@ -151,6 +157,7 @@ function runGame() {
       world.step(STEP, {
         up: false, down: false, left: false, right: false, run: false, handbrake: false,
         enterPressed: false, punchPressed: false, shootHeld: false, aimX: 0, aimY: 0,
+        hornPressed: false,
       }, true);
       return;
     }
@@ -158,11 +165,13 @@ function runGame() {
     const aim = aimWorld();
     // One-shot presses are taken once per frame and spent on the first step.
     const enterPressed = !!(frameActions & ACTION_ENTER);
-    frameActions &= ~ACTION_ENTER;
+    const hornPressed = !!(frameActions & ACTION_HORN);
+    frameActions &= ~(ACTION_ENTER | ACTION_HORN);
     const events = world.step(STEP, {
       up: held.up, down: held.down, left: held.left, right: held.right,
       run: held.run, handbrake: held.handbrake,
       enterPressed,
+      hornPressed,
       punchPressed: input.punchHeld(),
       shootHeld: input.mouse().down,
       aimX: aim.x, aimY: aim.y,
@@ -172,6 +181,7 @@ function runGame() {
     if (events & EVENT_PICKUP) audio.pickup();
     if (events & EVENT_EXPLOSION) audio.explosion();
     if (events & EVENT_ENTER_CAR) audio.pickup();
+    if (events & EVENT_HORN) audio.horn();
     if (events & EVENT_MISSION) {
       audio.mission();
       writeSave();
@@ -181,12 +191,19 @@ function runGame() {
     if (events & EVENT_WASTED) endGame('wasted');
     else if (events & EVENT_BUSTED) endGame('busted');
     if (world.state.missionIndex !== missionSeen) missionSeen = world.state.missionIndex;
+    // A new star earns a dispatch blip, so the player hears the heat rise.
+    if (world.state.wanted > wantedSeen) audio.dispatch();
+    wantedSeen = world.state.wanted;
     const speed = world.state.player.inCar ? world.state.player.inCar.speed : 0;
     audio.update(STEP, speed, world.state.wanted);
   }
 
   function handleActions(actions) {
     audio.unlock();
+    if (actions & ACTION_MUTE) {
+      muted = audio.toggleMute();
+      announce(muted ? 'Sound muted.' : 'Sound on.');
+    }
     if (screen === SCREEN_TITLE) {
       if (actions & ACTION_CONTINUE && save) startGame(true);
       else if (actions & ACTION_CONFIRM) startGame(false);
@@ -200,7 +217,7 @@ function runGame() {
     } else if (screen === SCREEN_PLAY) {
       if (actions & ACTION_PAUSE) {
         screen = SCREEN_PAUSED;
-        announce('Paused.');
+        announce('Paused. How to play is on screen.');
       }
     } else if (screen === SCREEN_PAUSED) {
       if (actions & (ACTION_PAUSE | ACTION_CONFIRM)) {

@@ -1,12 +1,19 @@
 // Every tuning number and colour in one place. Solmar Bay is a top-down open world
 // 3200 x 2400 world units: a road grid, a beach and ocean to the south, docks to the
-// west, a park and a downtown core. The playfield is a fixed 1280x720 logical area;
-// the renderer scales it to the window and the camera follows the player.
-
+// west, a marina to the south-east, a park and a downtown core. The playfield is a
+// fixed 1280x720 logical area; the renderer scales it to the window and the camera
+// follows the player.
+//
+// The day runs on a 6-minute clock (timeOfDay 0..1): 0.25 is sunrise, 0.5 is noon,
+// 0.75 is sunset. The renderer reads the same clock for its golden-hour wash and
+// its night veil, so the light and the clock can never disagree.
 export const VIEW = { width: 1280, height: 720 };
 
 /** The simulation's fixed step, in seconds: 60 updates a second whatever the display's rate. */
 export const STEP = 1 / 60;
+
+/** One full day, in seconds of play. */
+export const DAY_LENGTH = 360;
 
 export const WORLD = {
   width: 3200,
@@ -47,8 +54,21 @@ export const CAR = {
   health: 100,
 };
 
-export const TRAFFIC = { count: 28, minSpeed: 110, maxSpeed: 185, turnChance: 0.3 };
-export const PEDS = { count: 46, minSpeed: 34, maxSpeed: 62 };
+export const TRAFFIC = {
+  count: 28,
+  minSpeed: 110,
+  maxSpeed: 185,
+  turnChance: 0.3,
+  /** Seconds stuck behind a stopped car before a driver tries to overtake it. */
+  overtakeAfter: 2.0,
+  /** Seconds stuck before a driver gives up waiting and forces a turn. */
+  impatientAfter: 6.0,
+  /** How far ahead a driver watches for a car to slow for, in world units. */
+  lookAhead: 170,
+  /** How close a car ahead must be to make a driver stop, in world units. */
+  stopGap: 90,
+};
+export const PEDS = { count: 46, minSpeed: 34, maxSpeed: 62, jogSpeed: 118 };
 
 export const POLICE = {
   maxCars: 5,
@@ -57,8 +77,12 @@ export const POLICE = {
   bustSeconds: 1.6,
   // Seconds without a crime before one star drops off.
   decaySeconds: 24,
+  /** How far a police car can be and still count as "on your tail" for the heat meter. */
+  heatRange: 520,
 };
 
+/** The four-mission story. The first three are Rico's jobs for Mara Solano; the
+ * fourth is the crew's last stand at her club, then a timed run to the marina. */
 export const MISSIONS = [
   {
     id: 'pickup',
@@ -78,7 +102,20 @@ export const MISSIONS = [
     brief: 'Los Diablos hold the warehouse on the west side. Clear them out, grab the cash, get back to Mara.',
     reward: 2500,
   },
+  {
+    id: 'laststand',
+    name: 'M4 · Last Stand',
+    brief: 'Los Diablos are hitting the Starfish Club. Hold the line, then get Mara to the marina before the cops lock the city down.',
+    reward: 4000,
+  },
 ];
+
+/** Mission 4's numbers: the defence wave, and the getaway clock. */
+export const LAST_STAND = {
+  thugs: 6,
+  getawaySeconds: 75,
+  triggerRadius: 240,
+};
 
 export const PALETTE = {
   backdrop: '#0d1420',
@@ -98,6 +135,8 @@ export const PALETTE = {
   roof: '#d8d3c8',
   tree: '#2f7a3d',
   treeLight: '#4da34d',
+  pier: '#8a6d4b',
+  pierDark: '#6b543a',
   player: '#f2c94c',
   playerShirt: '#e5534b',
   cop: '#2f5fd0',
@@ -115,6 +154,10 @@ export const PALETTE = {
   panel: 'rgba(12, 18, 30, 0.82)',
   panelSolid: '#101827',
   beacon: '#f2c94c',
+  heatCool: '#58c96b',
+  heatWarm: '#f2c94c',
+  heatHot: '#e5534b',
+  headlight: 'rgba(255, 240, 180, 0.20)',
 };
 
 export const FONT = 'system-ui, -apple-system, "Segoe UI", sans-serif';

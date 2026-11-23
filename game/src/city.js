@@ -1,10 +1,10 @@
 // Solmar Bay itself: the road grid, the blocks and buildings in it, the park, the
-// beach and ocean, the docks, and the named places the story uses. Everything is
-// generated once from the seeded random generator, so the same seed builds the
-// same city every time. All art is drawn from these rectangles at render time;
-// there are no images and no network requests.
+// beach and ocean, the docks, the marina piers, and the named places the story
+// uses. Everything is generated once from the seeded random generator, so the
+// same seed builds the same city every time. All art is drawn from these
+// rectangles at render time; there are no images and no network requests.
 import { PALETTE, WORLD } from './config.js';
-import { clamp, randomInt, randomPick } from './random.js';
+import { clamp, randomInt, randomPick, weightedPick } from './random.js';
 
 export const PLACES = {
   // Starfish Club (Mara's place), on the downtown boulevard.
@@ -21,7 +21,27 @@ export const PLACES = {
   hospital: { x: 880, y: 560, label: 'Solmar General' },
   // The park block.
   park: { x: 1040, y: 1040, label: 'Palm Park' },
+  // The marina, south-east, where mission 4 ends.
+  marina: { x: 2800, y: 2020, label: 'The Marina' },
 };
+
+/** The named districts, for the HUD's "you are here" line. */
+export const DISTRICTS = [
+  { name: 'Harbor', x0: 0, y0: 0, x1: 400, y1: WORLD.height },
+  { name: 'Downtown', x0: 1200, y0: 560, x1: 2160, y1: 1520 },
+  { name: 'Palm Park', x0: 880, y0: 880, x1: 1200, y1: 1200 },
+  { name: 'Beachfront', x0: 0, y0: WORLD.beachY, x1: WORLD.width, y1: WORLD.height },
+  { name: 'Northside', x0: 0, y0: 0, x1: WORLD.width, y1: 560 },
+  { name: 'Old Town', x0: 0, y0: 0, x1: WORLD.width, y1: WORLD.height },
+];
+
+/** Which district a point is in. Checked in order, so the small ones win. */
+export function districtAt(x, y) {
+  for (const d of DISTRICTS) {
+    if (x >= d.x0 && x < d.x1 && y >= d.y0 && y < d.y1) return d.name;
+  }
+  return 'Solmar Bay';
+}
 
 /** Is this block the park? The park sits between the 880/1200 roads, both ways. */
 function isParkBlock(ix, iy) {
@@ -35,10 +55,11 @@ function isDowntown(ix, iy) {
   return x >= 1200 && x <= 2160 && y >= 560 && y <= 1520;
 }
 
-/** Build the city: buildings per block, trees, and the landmark rectangles. */
+/** Build the city: buildings per block, trees, and the marina piers. */
 export function buildCity(random) {
   const buildings = [];
   const trees = [];
+  const piers = [];
   const half = WORLD.roadHalf + WORLD.sidewalk;
   for (let ix = 0; ix < WORLD.roadsX.length - 1; ix += 1) {
     for (let iy = 0; iy < WORLD.roadsY.length - 1; iy += 1) {
@@ -58,7 +79,11 @@ export function buildCity(random) {
         continue;
       }
       const downtown = isDowntown(ix, iy);
-      const count = downtown ? 1 + Math.floor(random() * 2) : 2 + Math.floor(random() * 3);
+      // Downtown gets one tall tower or two; the suburbs get a scatter of low
+      // shops and houses, so the skyline reads as a real city, not a grid of boxes.
+      const count = downtown
+        ? weightedPick(random, [[1, 3], [2, 1]])
+        : randomInt(random, 2, 4);
       for (let b = 0; b < count; b += 1) {
         const w = 60 + random() * 110;
         const h = 50 + random() * 90;
@@ -113,7 +138,13 @@ export function buildCity(random) {
   for (let x = 160; x < WORLD.width - 100; x += 90 + random() * 60) {
     trees.push({ x, y: WORLD.beachY + 30 + random() * 50, r: 10, palm: true });
   }
-  return { buildings, trees };
+  // The marina: three wooden piers reaching into the ocean off the beach lot,
+  // with a couple of moored boats drawn as hulls at render time.
+  for (let i = 0; i < 3; i += 1) {
+    const px = 2560 + i * 170;
+    piers.push({ x: px, y: WORLD.oceanY - 10, w: 26, h: 150 });
+  }
+  return { buildings, trees, piers };
 }
 
 /** The nearest road centre line to a point, and which axis it runs on. */

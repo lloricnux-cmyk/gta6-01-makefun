@@ -2,8 +2,10 @@
 // engine is a filtered sawtooth whose pitch follows the car's speed, the siren
 // is a two-tone square wave while the player is wanted, and gunshots, punches,
 // pickups, explosions and the mission jingle are short envelopes of noise or
-// sine tones. The context is created lazily on the first user gesture; every
-// call is guarded, so a browser without audio never breaks the game.
+// sine tones. New here: a two-tone car horn (H), a police-dispatch blip when a
+// star is added, and a mute toggle (M) that silences everything until pressed
+// again. The context is created lazily on the first user gesture; every call is
+// guarded, so a browser without audio never breaks the game.
 export function createAudio() {
   let ctx = null;
   let engineOsc = null;
@@ -12,6 +14,8 @@ export function createAudio() {
   let sirenOsc = null;
   let sirenGain = null;
   let sirenTimer = 0;
+  let muted = false;
+  let masterGain = null;
 
   function ensure() {
     if (ctx) return ctx;
@@ -19,6 +23,9 @@ export function createAudio() {
       const AudioContext = window.AudioContext || window.webkitAudioContext;
       if (!AudioContext) return null;
       ctx = new AudioContext();
+      masterGain = ctx.createGain();
+      masterGain.gain.value = 1;
+      masterGain.connect(ctx.destination);
       engineOsc = ctx.createOscillator();
       engineOsc.type = 'sawtooth';
       engineOsc.frequency.value = 60;
@@ -29,7 +36,7 @@ export function createAudio() {
       engineGain.gain.value = 0;
       engineOsc.connect(engineFilter);
       engineFilter.connect(engineGain);
-      engineGain.connect(ctx.destination);
+      engineGain.connect(masterGain);
       engineOsc.start();
       sirenOsc = ctx.createOscillator();
       sirenOsc.type = 'square';
@@ -37,7 +44,7 @@ export function createAudio() {
       sirenGain = ctx.createGain();
       sirenGain.gain.value = 0;
       sirenOsc.connect(sirenGain);
-      sirenGain.connect(ctx.destination);
+      sirenGain.connect(masterGain);
       sirenOsc.start();
     } catch {
       ctx = null;
@@ -52,7 +59,7 @@ export function createAudio() {
 
   function tone(freq, dur, type, gain, slideTo) {
     const c = ensure();
-    if (!c) return;
+    if (!c || muted) return;
     try {
       const osc = c.createOscillator();
       osc.type = type || 'sine';
@@ -62,7 +69,7 @@ export function createAudio() {
       g.gain.setValueAtTime(gain || 0.15, c.currentTime);
       g.gain.exponentialRampToValueAtTime(0.001, c.currentTime + dur);
       osc.connect(g);
-      g.connect(c.destination);
+      g.connect(masterGain);
       osc.start();
       osc.stop(c.currentTime + dur + 0.02);
     } catch {
@@ -72,7 +79,7 @@ export function createAudio() {
 
   function noise(dur, gain, filterFreq) {
     const c = ensure();
-    if (!c) return;
+    if (!c || muted) return;
     try {
       const len = Math.floor(c.sampleRate * dur);
       const buffer = c.createBuffer(1, len, c.sampleRate);
@@ -87,7 +94,7 @@ export function createAudio() {
       g.gain.value = gain || 0.25;
       src.connect(filter);
       filter.connect(g);
-      g.connect(c.destination);
+      g.connect(masterGain);
       src.start();
     } catch {
       // Audio is decoration; never let it break the game.
@@ -96,6 +103,22 @@ export function createAudio() {
 
   return {
     unlock: resume,
+    /** True while the mute toggle is on. The HUD hint shows the state. */
+    isMuted() {
+      return muted;
+    },
+    /** M toggles all sound, engine and siren included. */
+    toggleMute() {
+      muted = !muted;
+      if (masterGain && ctx) {
+        try {
+          masterGain.gain.setTargetAtTime(muted ? 0 : 1, ctx.currentTime, 0.02);
+        } catch {
+          // Ignore audio errors.
+        }
+      }
+      return muted;
+    },
     /** Call every frame: engine follows speed, siren follows the wanted level. */
     update(dt, speed, wanted) {
       const c = ctx;
@@ -139,6 +162,16 @@ export function createAudio() {
     wasted() {
       const notes = [392, 330, 262, 196];
       notes.forEach((freq, i) => setTimeout(() => tone(freq, 0.3, 'sawtooth', 0.1), i * 160));
+    },
+    /** Two-tone car horn: a low and a high note together, short and punchy. */
+    horn() {
+      tone(370, 0.32, 'square', 0.12);
+      tone(466, 0.32, 'square', 0.1);
+    },
+    /** Police dispatch blip when the wanted level rises: two short beeps. */
+    dispatch() {
+      tone(880, 0.09, 'square', 0.09);
+      setTimeout(() => tone(660, 0.12, 'square', 0.09), 110);
     },
   };
 }
