@@ -181,10 +181,11 @@ export const POLICE = {
   heatRange: 520,
 };
 
-/** The six-mission story. The first three are Rico's jobs for Mara Solano; the
+/** The seven-mission story. The first three are Rico's jobs for Mara Solano; the
  * fourth is the crew's last stand at her club, then a timed run to the marina;
  * the fifth is a bank job with a hold-up and a getaway; the sixth is the turf
- * war that decides who owns Solmar Bay. */
+ * war that decides who owns Solmar Bay; the seventh is a storm race against
+ * Dex, from the Beach Lot to the club, while the lightning comes down. */
 export const MISSIONS = [
   {
     id: 'pickup',
@@ -222,6 +223,12 @@ export const MISSIONS = [
     brief: 'Los Diablos are making their last stand at the docks. Wipe them out, take the stash, and come home king.',
     reward: 8000,
   },
+  {
+    id: 'stormrun',
+    name: 'M7 · The Storm Run',
+    brief: 'A storm is rolling in off the bay. Bring a car to the Beach Lot and race Dex through five checkpoints to the Starfish Club. $5,000 to the winner.',
+    reward: 5000,
+  },
 ];
 
 /** Mission 4's numbers: the defence wave, and the getaway clock. */
@@ -243,6 +250,16 @@ export const BANK_JOB = {
 export const TURF_WAR = {
   thugs: 8,
   triggerRadius: 240,
+};
+
+/** Mission 7's numbers: a storm race across the whole city. The trigger is
+ * the Beach Lot, the clock is the whole run, and Dex drives the orange Comet
+ * at a pace a good driver in a fast car can beat — barely. */
+export const STORM_RUN = {
+  triggerRadius: 240,
+  timeLimit: 100,
+  rivalSpeed: 280,
+  checkpointRadius: 90,
 };
 
 export const PALETTE = {
@@ -286,6 +303,11 @@ export const PALETTE = {
   heatWarm: '#f2c94c',
   heatHot: '#e5534b',
   headlight: 'rgba(255, 240, 180, 0.20)',
+  // The weather: rain streaks, lightning white, and the glint of puddles on
+  // wet asphalt.
+  rain: 'rgba(180, 210, 240, 0.35)',
+  lightning: '#fdf6c9',
+  puddle: 'rgba(190, 220, 245, 0.35)',
   // The side activities: taxi yellow, race orange, package gold, the bike's
   // teal and the truck's brown, the phone's dark panel, vendor awnings and
   // the fishermen's khaki.

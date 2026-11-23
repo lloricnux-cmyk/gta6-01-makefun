@@ -3,7 +3,7 @@
 // the phone is open, so the player can read in peace and the cops wait.
 //
 // The phone has two pages in one panel: the story so far, and the numbers.
-// The story lists all six missions with their state — done, current, or
+// The story lists all seven missions with their state — done, current, or
 // locked — and the reward each one pays. The numbers are the run's own
 // ledger: cash earned, fares driven, races won, the best race time, the
 // packages found, and the guns owned. Everything it shows comes from the
@@ -12,6 +12,7 @@
 // It draws itself with raw canvas calls, like the rest of the HUD, and the
 // renderer calls it when the main loop says the phone is open.
 import { FONT, MISSIONS, PACKAGES, PALETTE, VIEW } from './config.js';
+import { weatherLabel } from './weather.js';
 import { weaponListLines } from './weapons.js';
 
 const PHONE_W = 460;
@@ -51,6 +52,8 @@ export function phoneStats(state) {
     ['Taxi fares', String(stats.faresDone || 0)],
     ['Races won', String(stats.racesWon || 0)],
     ['Best race time', best],
+    ['Storm runs won', String(stats.stormsWon || 0)],
+    ['Weather now', weatherLabel(state.weather)],
     ['Cars driven', String(state.carsDriven || 0)],
     ['Pedestrians hit', String(state.pedsHit || 0)],
   ];

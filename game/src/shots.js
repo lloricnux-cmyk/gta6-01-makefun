@@ -126,6 +126,9 @@ export function stageShot(name, world) {
   if (name === 'mission') {
     world.reset();
     world.debug.setTimeOfDay(0.72);
+    // The bank job in a storm: the sky is black, the rain is falling, and
+    // the lightning is coming down on the Solmar Trust.
+    world.debug.setWeather('storm');
     // Mission 5, mid-hold-up: Rico on foot outside the Solmar Trust, shotgun
     // out, the bank's guards closing in from every side.
     world.debug.setMission(4, 1);

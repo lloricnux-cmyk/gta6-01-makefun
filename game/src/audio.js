@@ -174,6 +174,11 @@ export function createAudio() {
       setTimeout(() => tone(660, 0.12, 'square', 0.09), 110);
     },
     /** Shotgun: a fat, low blast — more noise and more body than the pistol. */
+    /** Thunder: a low rumble that rolls in a beat after the lightning. */
+    thunder() {
+      noise(0.9, 0.3, 240);
+      tone(65, 0.9, 'sine', 0.22, 28);
+    },
     shotgun() {
       noise(0.28, 0.42, 900);
       tone(120, 0.22, 'square', 0.2, 40);

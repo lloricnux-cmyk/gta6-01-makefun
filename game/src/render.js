@@ -16,6 +16,7 @@ import { drawVehicleShape } from './vehicles.js';
 import { drawAmbient } from './ambient.js';
 import { drawPhone } from './phone.js';
 import { weaponName } from './weapons.js';
+import { rainDropCount, skyDim, weatherLabel } from './weather.js';
 
 export const SCREEN_TITLE = 'title';
 export const SCREEN_PLAY = 'play';
@@ -475,6 +476,54 @@ export function createRenderer(canvas) {
     }
   }
 
+  /** Puddle glints on wet asphalt, in world space: seeded spots on the roads
+   * that only show once the rain has settled in. */
+  function drawPuddles(state, vis) {
+    const ctx = context;
+    const weather = state.weather;
+    if (!weather || weather.strength < 0.2 || !weather.puddles) return;
+    ctx.fillStyle = PALETTE.puddle;
+    for (const p of weather.puddles) {
+      if (p.x < vis.x0 || p.x > vis.x1 || p.y < vis.y0 || p.y > vis.y1) continue;
+      ctx.beginPath();
+      ctx.ellipse(p.x, p.y, p.r, p.r * 0.45, 0, 0, Math.PI * 2);
+      ctx.fill();
+    }
+  }
+
+  /** Rain and lightning, in screen space over the world but under the HUD:
+   * slanted streaks that fall on a seeded pattern, a grey storm veil, and
+   * the white flash of a strike while it lasts. */
+  function drawRain(state) {
+    const ctx = context;
+    const weather = state.weather;
+    if (!weather) return;
+    const dim = skyDim(weather);
+    if (dim > 0) {
+      ctx.fillStyle = `rgba(10, 20, 40, ${dim.toFixed(3)})`;
+      ctx.fillRect(0, 0, VIEW.width, VIEW.height);
+    }
+    const count = rainDropCount(weather);
+    if (count > 0) {
+      ctx.strokeStyle = PALETTE.rain;
+      ctx.lineWidth = 2;
+      ctx.beginPath();
+      for (let i = 0; i < count; i += 1) {
+        const seedA = ((i * 2654435761) % 1000) / 1000;
+        const seedB = ((i * 40503) % 1000) / 1000;
+        const x = (seedA * VIEW.width + state.time * 60) % VIEW.width;
+        const y = (seedB * VIEW.height + state.time * 900) % VIEW.height;
+        ctx.moveTo(x, y);
+        ctx.lineTo(x - 4, y + 14);
+      }
+      ctx.stroke();
+    }
+    if (weather.flash > 0) {
+      ctx.fillStyle = `rgba(253, 246, 201, ${(weather.flash * 0.28).toFixed(3)})`;
+      ctx.fillRect(0, 0, VIEW.width, VIEW.height);
+    }
+  }
+
   /** The light, blended smoothly: night veil, then a golden-hour wash at dusk. */
   function drawLighting(state) {
     const ctx = context;
@@ -552,7 +601,7 @@ export function createRenderer(canvas) {
     }
     // Mission target.
     const target = state.missionTarget;
-    if (target && state.missionIndex < 6) {
+    if (target && state.missionIndex < 7) {
       const pulse = 5 + Math.sin(state.time * 5) * 2;
       ctx.fillStyle = PALETTE.beacon;
       ctx.beginPath();
@@ -655,19 +704,19 @@ export function createRenderer(canvas) {
     }
     drawHeatBar(state);
     // Mission objective, top centre.
-    const mission = state.missionIndex < 6 ? `MISSION ${state.missionIndex + 1}/6` : 'FREE ROAM';
+    const mission = state.missionIndex < 7 ? `MISSION ${state.missionIndex + 1}/7` : 'FREE ROAM';
     outlineText(mission, VIEW.width / 2, 36, 15, PALETTE.gold, 'center', 'bold ');
     outlineText(state.missionText, VIEW.width / 2, 62, 17, '#fff', 'center');
-    if (state.missionTarget && state.missionIndex < 6) {
+    if (state.missionTarget && state.missionIndex < 7) {
       const d = Math.round(Math.hypot(player.x - state.missionTarget.x, player.y - state.missionTarget.y));
       outlineText(`${state.missionTarget.label} · ${d}m`, VIEW.width / 2, 86, 14, PALETTE.muted, 'center');
     }
     // The side of the city that pays: packages found, fares driven, races
-    // won, under the objective.
+    // won, and the sky overhead — under the objective.
     const found = state.packages ? state.packages.filter((p) => p.found).length : 0;
     const fares = state.stats ? state.stats.faresDone : 0;
     const races = state.stats ? state.stats.racesWon : 0;
-    outlineText(`PACKAGES ${found}/${PACKAGES.count} · FARES ${fares} · RACES ${races}`, VIEW.width / 2, 108, 13, 'rgba(255,255,255,0.65)', 'center', 'bold ');
+    outlineText(`PACKAGES ${found}/${PACKAGES.count} · FARES ${fares} · RACES ${races} · WEATHER ${weatherLabel(state.weather)}`, VIEW.width / 2, 108, 13, 'rgba(255,255,255,0.65)', 'center', 'bold ');
     // Taxi and race status, while either is running.
     if (state.taxi && state.taxi.phase === 'toDropoff') {
       outlineText(`TAXI — $${state.taxi.fare} · ${Math.max(0, Math.ceil(state.taxi.timer))}s`, VIEW.width / 2, 132, 16, PALETTE.taxi, 'center', 'bold ');
@@ -678,6 +727,13 @@ export function createRenderer(canvas) {
       outlineText(`RACE IN ${Math.max(1, Math.ceil(state.race.countdown))}…`, VIEW.width / 2, 156, 22, PALETTE.race, 'center', 'bold ');
     } else if (state.race && state.race.phase === 'running') {
       outlineText(`RACE — CHECKPOINT ${state.race.index}/6 · ${state.race.timer.toFixed(1)}s`, VIEW.width / 2, 156, 16, PALETTE.race, 'center', 'bold ');
+    }
+    // Storm run status, while the race against Dex is on: checkpoint, clock,
+    // and where the rival is, one slot below the race line.
+    if (state.stormRun && state.stormRun.phase === 'running') {
+      const run = state.stormRun;
+      const rivalAt = run.rival ? run.rival.targetIndex + 1 : 1;
+      outlineText(`STORM RUN — CHECKPOINT ${run.index + 1}/5 · ${Math.max(0, Math.ceil(run.timer))}s · DEX ${rivalAt}/5`, VIEW.width / 2, 180, 16, PALETTE.lightning, 'center', 'bold ');
     }
     // Getaway clock, big and red while it runs. It sits below the status
     // lines, and the toast drops one slot lower while the clock is up, so
@@ -750,8 +806,8 @@ export function createRenderer(canvas) {
   /** The pause menu doubles as the "How to play" recap: controls, the goal,
    * and where the story stands, so a returning player never has to guess. */
   function drawPausePanel(state, ui) {
-    const missionLine = state.missionIndex < 6
-      ? `Mission ${state.missionIndex + 1}/6 — ${MISSIONS[state.missionIndex].name}`
+    const missionLine = state.missionIndex < 7
+      ? `Mission ${state.missionIndex + 1}/7 — ${MISSIONS[state.missionIndex].name}`
       : 'All missions complete — free roam.';
     drawPanel('PAUSED · HOW TO PLAY', [
       'WASD / arrows — move on foot, drive in a car',
@@ -780,9 +836,9 @@ export function createRenderer(canvas) {
     text('packages to move, cars to steal, scores to settle. The city is yours. The law is not.', VIEW.width / 2, 294, 19, PALETTE.muted, 'center');
     text('WASD / arrows — move & drive      E — enter / steal a car      Mouse — aim, click — shoot', VIEW.width / 2, 352, 18, PALETTE.text, 'center');
     text('Space — punch      Shift — run      H — horn      Tab — phone      1/2/3 — switch gun      P — pause      M — mute', VIEW.width / 2, 380, 18, PALETTE.text, 'center');
-    text('6 missions · taxi fares · street races · 20 hidden packages · bikes & trucks · wanted level & police · save keeps your cash', VIEW.width / 2, 424, 17, PALETTE.muted, 'center');
+    text('7 missions · taxi fares · street races · 20 hidden packages · bikes & trucks · wanted level & police · storms & the Storm Run · save keeps your cash', VIEW.width / 2, 424, 17, PALETTE.muted, 'center');
     const prompt = ui.hasSave
-      ? `ENTER — start story      C — continue ($${ui.saveCash}, mission ${ui.saveMission}/6)`
+      ? `ENTER — start story      C — continue ($${ui.saveCash}, mission ${ui.saveMission}/7)`
       : 'ENTER or click — start story';
     outlineText(prompt, VIEW.width / 2, 500, 24, PALETTE.gold, 'center', 'bold ');
     if (ui.best > 0) text(`Best cash: $${ui.best.toLocaleString('en-US')}`, VIEW.width / 2, 544, 17, PALETTE.muted, 'center');
@@ -824,9 +880,11 @@ export function createRenderer(canvas) {
     for (const d of drawables) d.draw();
     drawPlayerShape(state);
     drawParticles(state);
+    drawPuddles(state, vis);
     // Back to screen space for lighting and the HUD.
     ctx.setTransform(view.scale, 0, 0, view.scale, view.x, view.y);
     drawLighting(state);
+    drawRain(state);
     if (screen === SCREEN_TITLE) {
       drawTitle(state, ui);
       return;

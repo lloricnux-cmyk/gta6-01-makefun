@@ -17,11 +17,12 @@ import { createRenderer, SCREEN_BUSTED, SCREEN_PAUSED, SCREEN_PLAY, SCREEN_TITLE
 import { stageShot } from './shots.js';
 import { EVENT_PACKAGE, EVENT_RACE, EVENT_TAXI } from './side.js';
 import { switchWeapon, weaponName } from './weapons.js';
+import { EVENT_THUNDER } from './weather.js';
 
 /** The longest frame the loop catches up on; a longer stall (a hidden tab) is dropped, not replayed. */
 const MAX_FRAME = 0.25;
-/** The story has six missions; a save from an older build clamps to them. */
-const MISSION_COUNT = 6;
+/** The story has seven missions; a save from an older build clamps to them. */
+const MISSION_COUNT = 7;
 
 const params = new URLSearchParams(window.location.search);
 const shot = params.get('shot');
@@ -200,6 +201,7 @@ function runGame() {
     if (events & EVENT_TAXI) audio.taxi();
     if (events & EVENT_RACE) audio.raceBeep(false);
     if (events & EVENT_PACKAGE) audio.packageBlip();
+    if (events & EVENT_THUNDER) audio.thunder();
     if (events & EVENT_MISSION) {
       audio.mission();
       writeSave();

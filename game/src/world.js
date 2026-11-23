@@ -17,6 +17,8 @@ import { createWeaponState, fireWeapon, giveWeapon, syncAmmo } from './weapons.j
 import { clampSpecialSpeed, parkSpecialVehicles, steerRateOf } from './vehicles.js';
 import { createAmbient, updateAmbient } from './ambient.js';
 import { spawnBankThugs, updateMissions56 } from './missions2.js';
+import { cancelStormRun, createStormRun, updateStormRun } from './missions3.js';
+import { createWeather, setWeatherKind, updateWeather, wetGripFactor } from './weather.js';
 
 export const EVENT_SHOT = 1;
 export const EVENT_PUNCH = 2;
@@ -98,10 +100,14 @@ export function createWorld(random) {
     missionHold: 0,
     // The side of the city that pays between missions: the taxi, the race,
     // the hidden packages, and the ledger the phone shows.
-    stats: { cashEarned: 0, faresDone: 0, racesWon: 0, bestRace: null, packagesFound: 0 },
+    stats: { cashEarned: 0, faresDone: 0, racesWon: 0, bestRace: null, packagesFound: 0, stormsWon: 0 },
     taxi: createTaxi(),
     race: createRace(),
     packages: [],
+    // The sky overhead, and the storm race it feeds: the weather rolls on
+    // its own clock, and mission seven races through it.
+    weather: createWeather(random),
+    stormRun: createStormRun(),
     ambient: null,
     district: 'Downtown',
     elapsed: 0,
@@ -331,10 +337,14 @@ export function createWorld(random) {
     // A fresh side of the city: the ledger starts at zero, the taxi is
     // waiting for its first request, the race flag is up, the packages are
     // hidden again, and the fishermen are back on their piers.
-    state.stats = { cashEarned: 0, faresDone: 0, racesWon: 0, bestRace: null, packagesFound: 0 };
+    state.stats = { cashEarned: 0, faresDone: 0, racesWon: 0, bestRace: null, packagesFound: 0, stormsWon: 0 };
     state.taxi = createTaxi();
     state.race = createRace();
     state.packages = createPackages(random);
+    // A fresh sky and a fresh storm race, so a reset world always starts
+    // under the same clear sky the first build did.
+    state.weather = createWeather(random);
+    state.stormRun = createStormRun();
     state.ambient = createAmbient(city);
     state.district = 'Downtown';
     state.elapsed = 0;
@@ -414,6 +424,10 @@ export function createWorld(random) {
       setMissionText(MISSIONS[5].brief);
       setMissionTarget(PLACES.docks.x, PLACES.docks.y, PLACES.docks.label);
       showToast('One last stand at the docks. End it, Rico.', 4);
+    } else if (state.missionIndex === 6) {
+      setMissionText(MISSIONS[6].brief);
+      setMissionTarget(PLACES.beachLot.x, PLACES.beachLot.y, PLACES.beachLot.label);
+      showToast('A storm is coming. Bring a car to the Beach Lot.', 4);
     } else {
       setMissionText('Solmar Bay is yours. Free roam — earn cash, dodge the law, live large.');
       setMissionTarget(PLACES.club.x, PLACES.club.y, PLACES.club.label);
@@ -536,6 +550,25 @@ export function createWorld(random) {
         setMissionTarget,
         missionComplete,
         spawnThugsAt,
+      });
+    } else if (state.missionIndex === 6) {
+      // M7 · The Storm Run lives in its own module too, with one extra
+      // helper: the weather, so the race can call the storm down.
+      updateStormRun(dt, {
+        state,
+        player,
+        random,
+        distance,
+        addCrime,
+        showToast,
+        showBanner,
+        setMissionText,
+        setMissionTarget,
+        missionComplete,
+        spawnThugsAt,
+        setWeather(kind) {
+          setWeatherKind(state.weather, kind, random);
+        },
       });
     }
   }
@@ -708,9 +741,12 @@ export function createWorld(random) {
       const forward = { x: Math.cos(car.angle), y: Math.sin(car.angle) };
       const accel = car.accel || CAR.accel;
       const steerRate = steerRateOf(car);
+      // Wet roads take grip away: the brakes bite less and the steering
+      // goes soft, so a storm drive needs an earlier brake and a lighter hand.
+      const wet = wetGripFactor(state.weather);
       if (input.up) car.speed += accel * dt;
       if (input.down) {
-        if (car.speed > 10) car.speed -= CAR.brake * dt;
+        if (car.speed > 10) car.speed -= CAR.brake * dt * (0.55 + 0.45 * wet);
         else car.speed -= accel * 0.55 * dt;
       }
       car.speed -= car.speed * 0.45 * dt;
@@ -719,7 +755,7 @@ export function createWorld(random) {
       car.speed = clamp(car.speed, -CAR.reverseMax, car.maxSpeed);
       const steer = (input.left ? -1 : 0) + (input.right ? 1 : 0);
       const steerFactor = clamp(Math.abs(car.speed) / 160, 0, 1) * (car.speed < 0 ? -1 : 1);
-      car.angle += steer * steerRate * steerFactor * dt;
+      car.angle += steer * steerRate * steerFactor * wet * dt;
       const nx = car.x + Math.cos(car.angle) * car.speed * dt;
       const ny = car.y + Math.sin(car.angle) * car.speed * dt;
       car.x = clamp(nx, 40, WORLD.width - 40);
@@ -1279,6 +1315,11 @@ export function createWorld(random) {
     if (state.bannerTimer > 0) state.bannerTimer -= dt;
     if (state.toastTimer > 0) state.toastTimer -= dt;
 
+    // The sky rolls on whether Rico is playing or not, so the title screen
+    // lives under the same weather the game does — and a strike on the title
+    // still flashes, even though nobody hears it there.
+    events |= updateWeather(dt, state.weather, random);
+
     // Wanted level decays when the player stays clean.
     if (state.wanted > 0) {
       state.crimeTimer += dt;
@@ -1344,6 +1385,7 @@ export function createWorld(random) {
     // back up for the next attempt.
     cancelTaxi(state, random);
     cancelRace(state);
+    cancelStormRun(state);
     showToast(reason === 'busted' ? `BUSTED — you lost $${lost}` : `WASTED — you lost $${lost}`, 3);
   }
 
@@ -1383,6 +1425,9 @@ export function createWorld(random) {
       setTimeOfDay(t) {
         state.timeOfDay = t;
       },
+      setWeather(kind) {
+        setWeatherKind(state.weather, kind, random);
+      },
       setMission(index, stepIndex) {
         state.missionIndex = index;
         state.missionStep = stepIndex;
@@ -1401,6 +1446,9 @@ export function createWorld(random) {
         } else if (index === 5) {
           setMissionText(MISSIONS[5].brief);
           setMissionTarget(PLACES.docks.x, PLACES.docks.y, PLACES.docks.label);
+        } else if (index === 6) {
+          setMissionText(MISSIONS[6].brief);
+          setMissionTarget(PLACES.beachLot.x, PLACES.beachLot.y, PLACES.beachLot.label);
         }
       },
       spawnPolice(n) {
